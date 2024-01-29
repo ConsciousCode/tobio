@@ -1,0 +1,6 @@
+pydantic
+fastapi
+uvicorn
+sqlalchemy==2.0
+openai[openai]
+websockets

@@ -1,0 +1,32 @@
+[project]
+name = "tobio"
+version = "0.0.1"
+description = "Facilitate the creation of artificial people."
+readme = "README.md"
+requires-python = ">= 3.12"
+keywords = ["tobio", "ai", "artificial", "intelligence", "people", "llm", "openai"]
+license = {
+    text="MIT License",
+    file="LICENSE"
+}
+authors = [
+    {name="Robert McDaniels", email="conscious.code@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Framework :: Pydantic :: 2",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+tobio = "tobio:main"
+
+[mypy]
+plugins = "sqlmypy"

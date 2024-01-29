@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package llm;
+
+service LLM {
+	rpc Encode (Decoding) returns (Encoding) {}
+	rpc Decode (Encoding) returns (Decoding) {}
+	rpc Forward (ForwardRequest) returns (ForwardResponse) {}
+	rpc Complete (CompletionRequest) returns (stream CompletionResponse) {}
+	rpc Embed (EmbedRequest) returns (EmbedResponse) {}
+}
+
+message BoolTensor {
+	repeated uint32 shape = 1;
+	repeated bool data = 2;
+}
+message IntTensor {
+	repeated uint32 shape = 1;
+	repeated int32 data = 2;
+}
+message FloatTensor {
+	repeated uint32 shape = 1;
+	repeated float data = 2;
+}
+
+message Decoding {
+	string text = 1;
+}
+message Encoding {
+	repeated uint32 tokens = 1;
+}
+
+message ForwardRequest {
+	bool return_hidden = 1;
+	bool return_attention = 2;
+	oneof input {
+		string text = 3;
+		IntTensor tokens = 4;
+	}
+	BoolTensor attention_mask = 5;
+}
+message ForwardResponse {
+	repeated FloatTensor hidden = 2;
+	repeated FloatTensor attention = 3;
+	FloatTensor logits = 1;
+}
+
+message CompletionRequest {
+	string text = 1;
+	uint32 max_tokens = 2;
+	float temperature = 3;
+	float top_k = 4;
+	float top_p = 5;
+	float frequency_penalty = 6;
+	float presence_penalty = 7;
+	repeated string stop = 8;
+}
+message CompletionResponse {
+	string text = 1;
+	float score = 2;
+}
+
+message EmbedRequest {
+	string text = 1;
+}
+message EmbedResponse {
+	FloatTensor embed = 1;
+}
