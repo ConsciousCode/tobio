@@ -1,5 +1,5 @@
-# Tobio
-Tobio (named after [Tobio Tenma](https://en.wikipedia.org/wiki/Astro_Boy_(character))) is a bottom-up library designed with the explicit purpose to support the creation of artificial people. Working name for an artificial person is "sapien".
+# Orin
+Artificial person Orin.
 
 ## Getting started
 TODO
