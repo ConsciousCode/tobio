@@ -3,8 +3,9 @@ BOTTOM. UP. ONLY BOTTOM UP. DO NOTHING TOP-DOWN. Every change MUST result in a
 working program.
 '''
 
-from typing import Literal, NotRequired, Optional, Required, TypedDict, cast
+from typing import Literal, NotRequired, Optional, Required, TypedDict, assert_never, cast, reveal_type
 import chainlit as cl
+from chainlit.element import Text
 from openai.types.chat import ChatCompletionMessageParam
 from orin import load_config
 from orin.util import logger
@@ -98,6 +99,24 @@ class Context:
                 summary = await self.add_summary(oldest)
                 print("Summary", summary)
     
+    def stream(self, delta: str):
+        '''Stream deltas to the last message'''
+        
+        last = self.history[-1]
+        content = last.get('content')
+        if content is None:
+            last["content"] = delta
+        elif isinstance(content, str):
+            last['content'] = content + delta
+        elif isinstance(content, list):
+            step = content[-1]
+            if step['type'] == "text":
+                step['text'] += delta
+            else:
+                content.append({"type": "text", "text": delta})
+        else:
+            assert_never(content)
+    
     def chatlog(self):
         return [self.chat_prompt, *self.history]
 
@@ -112,6 +131,54 @@ async def on_chat_end():
     context = cast(Context, cl.user_session.get("context"))
     await context.__aexit__(None, None, None)
 
+@cl.step(type="run", name="command")
+async def command(context: Context, cmd: str, rest: str):
+    match cmd:
+        case "history":
+            return {"history": context.history}
+        
+        case _:
+            return f"Unknown command {cmd}"
+
+@cl.step(type="llm", name="orin")
+async def call_llm(context: Context, msg: cl.Message):
+    settings = context.config['models']['chat']
+    chatlog = context.chatlog()
+    
+    step = cl.context.current_step
+    if step is not None:
+        step.generation = cl.ChatGeneration(
+            provider="openai-chat",
+            messages=[
+                cl.GenerationMessage(
+                    role=m['role'],
+                    formatted=m['content'], # type: ignore
+                    name=m.get('name')
+                ) for m in chatlog
+            ],
+            settings=settings
+        )
+        step.input = msg.content
+        
+        msg = cl.Message(author="Orin", content="")
+        await msg.send()
+        
+        stream = await context.openai.chat.completions.create(
+            messages=context.chatlog(),
+            stream=True,
+            **settings,
+        )
+        
+        async for part in stream:
+            delta = part.choices[0].delta
+            if delta.content:
+                # Stream the output of the step
+                await msg.stream_token(delta.content)
+                
+                context.stream(delta.content)
+        
+        return msg.content
+
 @cl.on_message
 async def on_message(message: cl.Message):
     context = cast(Context, cl.user_session.get("context"))
@@ -120,22 +187,7 @@ async def on_message(message: cl.Message):
     if content.startswith("/") and not content.startswith("//"):
         cmd, *rest = content[1:].split(None, 1)
         rest = rest[0] if rest else ""
-        match cmd:
-            case "history":
-                result = {"history": context.history}
-            
-            case _:
-                result = f"Unknown command {cmd}"
-        
-        await cl.Message(result, "Command").send()
-        return
-    
-    await context.add("user", message.content)
-    
-    result = await context.openai.chat.completions.create(
-        messages=context.chatlog(),
-        **context.config['models']['chat']
-    )
-    if content := result.choices[0].message.content:
-        await context.add("assistant", content, "Orin")
-        await cl.Message(author="Orin", content=content).send()
+        await command(context, cmd, rest)
+    else:
+        await context.add("user", message.content)
+        await call_llm(context, message)
