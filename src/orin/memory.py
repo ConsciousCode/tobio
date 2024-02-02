@@ -10,9 +10,11 @@ from chainlit.element import ElementDict, ElementDisplay, ElementType
 from chainlit.step import StepDict
 import chainlit.data as cl_data
 from chainlit.user import UserDict
-from literalai import PageInfo, PaginatedResponse
 
-from .orm import Base, Column, Database, NoId, HasId, PrimaryKey, many_to_one, one_to_many, many_to_many, select, update, delete, func, UUID
+from literalai import PageInfo, PaginatedResponse
+from peewee import IntegrityError
+
+from .orm import Base, Column, Database, NoId, HasId, PrimaryKey, insert_with_on_conflict, many_to_one, one_to_many, many_to_many, select, update, insert, delete, func, UUID
 
 class Tag(HasId):
     __tablename__ = "tags"
@@ -52,18 +54,41 @@ class User(HasId):
     guid = Column[UUID](primary_key=True)
     name = Column[str](unique=True)
     created_at = Column[float]()
-    deleted_at = Column[Optional[float]]()
+    deleted_at = Column[Optional[float]](default=None)
     metadata_ = Column[Optional[dict]]("metadata")
     
     def __init__(self, guid: UUID, name: str, created_at: float, metadata: Optional[Any]=None): ...
     
     threads = one_to_many(lambda: Thread, backref=lambda: Thread.user)
+    sessions = one_to_many(lambda: UserSession, backref=lambda: UserSession.user)
     
     def to_dict(self) -> UserDict:
         return {
             "id": str(self.guid),
             "identifier": self.name,
             "metadata": self.metadata_ or {}
+        }
+
+class UserSession(HasId):
+    __tablename__ = "user_sessions"
+    
+    guid = Column[UUID](primary_key=True)
+    created_at = Column[float]()
+    deleted_at = Column[Optional[float]](default=None)
+    anon_user_id = Column[str]()
+    user_guid = Column[Optional[UUID]](foreign_key=lambda: User.guid)
+    is_interactive = Column[bool]()
+    
+    def __init__(self, guid: UUID, started_at: float, anon_user_id: str, user_guid: Optional[UUID]=None, is_interactive=False): ...
+    
+    user = many_to_one(lambda: User, backref=lambda: User.sessions)
+    
+    def to_dict(self) -> dict:
+        return {
+            "id": str(self.guid),
+            "startedAt": datetime.utcfromtimestamp(self.created_at).isoformat(),
+            "anonUserId": self.anon_user_id,
+            "userId": str(self.user_guid) if self.user_guid else None
         }
 
 class Thread(HasId):
@@ -74,7 +99,7 @@ class Thread(HasId):
     title = Column[str]()
     created_at = Column[float]()
     updated_at = Column[float]()
-    deleted_at = Column[Optional[float]]()
+    deleted_at = Column[Optional[float]](default=None)
     summary = Column[Optional[str]]()
     metadata_ = Column[Optional[Any]]("metadata")
     
@@ -96,6 +121,7 @@ class Step(HasId):
     thread_guid = Column[UUID](foreign_key=lambda: Thread.guid)
     created_at = Column[float]()
     finished_at = Column[Optional[float]]()
+    deleted_at = Column[Optional[float]](default=None)
     
     def __init__(self, guid: UUID, name: str, type: TrueStepType, metadata: Optional[Any], parent_guid: Optional[UUID], thread_guid: Optional[UUID], created_at: float, finished_at: Optional[float]=None): ...
     
@@ -137,8 +163,10 @@ class Element(HasId):
     metadata_ = Column[Optional[Any]]("metadata")
     thread_guid = Column[UUID](foreign_key=lambda: Thread.guid)
     display = Column[ElementDisplay]()
+    created_at = Column[float]()
+    deleted_at = Column[Optional[float]](default=None)
     
-    def __init__(self, guid: UUID, type: ElementType, metadata: Optional[Any], thread_guid: UUID, display: ElementDisplay): ...
+    def __init__(self, guid: UUID, type: ElementType, metadata: Optional[Any], thread_guid: UUID, display: ElementDisplay, created_at: float): ...
     
     thread = many_to_one(lambda: Thread, backref=lambda: Thread.elements)
     
@@ -201,11 +229,50 @@ class DataLayer(cl_data.BaseDataLayer):
         )
     
     @override
+    async def update_user_session(
+            self, id: str, is_interactive: bool, ended_at: Optional[str]
+        ) -> dict:
+        session: UserSession = self.db.execute(
+            select(UserSession).where(UserSession.guid == id)
+        ).one()[0]
+        
+        session.is_interactive = is_interactive
+        if ended_at:
+            session.deleted_at = datetime.fromisoformat(ended_at).timestamp()
+        
+        self.db.commit()
+        return session.to_dict()
+    
+    @override
+    async def create_user_session(
+            self,
+            id: str,
+            started_at: str,
+            anon_user_id: str,
+            user_id: Optional[str],
+        ) -> dict:
+        return self.db.add(UserSession(
+            guid=uuid.UUID(id),
+            started_at=datetime.fromisoformat(started_at).timestamp(),
+            anon_user_id=anon_user_id,
+            user_guid=uuid.UUID(user_id) if user_id else None
+        )).to_dict()
+    
+    @override
+    async def delete_user_session(self, id: str) -> bool:
+        self.db.execute(
+            update(UserSession).where(UserSession.guid == id).values(
+                deleted_at=time.time()
+            )
+        )
+        self.db.commit()
+        return True
+    
+    @override
     @cl_data.queue_until_user_message()
     async def create_step(self, step_dict: StepDict):
         # TODO: StepDict.id exists
         guid = uuid.uuid4()
-        ct = time.time()
         thread_id = step_dict.get("threadId")
         thread = None if thread_id is None else uuid.UUID(thread_id)
         self.db.add(Step(
@@ -215,8 +282,32 @@ class DataLayer(cl_data.BaseDataLayer):
             metadata=step_dict.get("metadata"),
             parent_guid=step_dict.get("parent"),
             thread_guid=thread,
-            created_at=ct
+            created_at=time.time()
         ))
+    
+    @override
+    @cl_data.queue_until_user_message()
+    async def update_step(self, step_dict: StepDict):
+        self.db.execute(
+            update(Step).where(Step.guid == step_dict.get('id')).values(
+                name=step_dict.get("name", "undefined"),
+                type=step_dict.get('type'),
+                metadata=step_dict.get("metadata"),
+                parent_guid=step_dict.get("parent"),
+                finished_at=step_dict.get("end")
+            )
+        )
+        self.db.commit()
+    
+    @override
+    @cl_data.queue_until_user_message()
+    async def delete_step(self, step_id: str):
+        self.db.execute(
+            update(Step).where(Step.guid == step_id).values(
+                deleted_at=time.time()
+            )
+        )
+        self.db.commit()
     
     @override
     async def get_thread_author(self, thread_id: str) -> str:
@@ -231,6 +322,7 @@ class DataLayer(cl_data.BaseDataLayer):
             pagination: cl_types.Pagination,
             filters: cl_types.ThreadFilter
         ) -> PaginatedResponse[cl_types.ThreadDict]:
+        # TODO: pagination
         threads = self.db.execute(
             select(Thread).where(Thread.deleted_at == None)
         ).fetchall()
@@ -253,6 +345,46 @@ class DataLayer(cl_data.BaseDataLayer):
         )
     
     @override
+    async def update_thread(
+            self,
+            thread_id: str,
+            user_id: Optional[str] = None,
+            metadata: Optional[dict] = None,
+            tags: Optional[list[str]] = None,
+        ):
+        '''Undocumented, but this is an upsert not an update.'''
+        
+        row = self.db.execute(
+            select(Thread).where(Thread.guid == thread_id)
+        ).fetchone()
+        # Insert
+        if row is None:
+            md = metadata or {}
+            now = time.time()
+            thread = self.db.add(Thread(
+                uuid.UUID(thread_id),
+                user_guid=uuid.UUID(user_id) if user_id else None,
+                title=md.get("title", "undefined"),
+                created_at=now,
+                updated_at=now,
+                metadata=metadata
+            ))
+            return
+        
+        # Update
+        thread: Thread = row[0]
+        if user_id:
+            thread.user_guid = uuid.UUID(user_id)
+        thread.metadata_ = metadata
+        if tags:
+            # Ensure tags exist, then update the thread's tags
+            with self.db.session() as session:
+                thread.tags.update(
+                    session.merge(Tag(name=tag)) for tag in tags
+                )
+                session.commit()
+    
+    @override
     async def get_thread(self, thread_id: str):
         return self.db.execute(
             select(Thread).where(Thread.guid == thread_id)
@@ -267,15 +399,6 @@ class DataLayer(cl_data.BaseDataLayer):
     
     @override
     async def upsert_feedback(self, feedback: cl_types.Feedback) -> str:
-        """
-        @dataclass
-        class Feedback:
-            forId: str
-            value: Literal[-1, 0, 1]
-            strategy: FeedbackStrategy = "BINARY"
-            id: Optional[str] = None
-            comment: Optional[str] = None
-        """
         # Update
         if feedback.id:
             self.db.execute(
@@ -310,7 +433,8 @@ class DataLayer(cl_data.BaseDataLayer):
             type=element_dict.get("type"),
             metadata=element_dict.get("metadata"),
             thread_guid=thread_id,
-            display=element_dict.get("display")
+            display=element_dict.get("display"),
+            created_at=time.time()
         ))
     
     @override
@@ -326,72 +450,8 @@ class DataLayer(cl_data.BaseDataLayer):
     @cl_data.queue_until_user_message()
     async def delete_element(self, element_id: str):
         self.db.execute(
-            delete(Element).where(Element.guid == element_id)
-        )
-        self.db.commit()
-    
-    @override
-    @cl_data.queue_until_user_message()
-    async def update_step(self, step_dict: StepDict):
-        self.db.execute(
-            update(Step).where(Step.guid == step_dict.get('id')).values(
-                name=step_dict.get("name", "undefined"),
-                type=step_dict.get('type'),
-                metadata=step_dict.get("metadata"),
-                parent_guid=step_dict.get("parent"),
-                finished_at=step_dict.get("end")
+            update(Element).where(Element.guid == element_id).values(
+                deleted_at=time.time()
             )
         )
         self.db.commit()
-    
-    @override
-    @cl_data.queue_until_user_message()
-    async def delete_step(self, step_id: str):
-        self.db.execute(
-            delete(Step).where(Step.guid == step_id)
-        )
-        self.db.commit()
-    
-    #---
-    @override
-    async def update_thread(
-        self,
-        thread_id: str,
-        user_id: Optional[str] = None,
-        metadata: Optional[dict] = None,
-        tags: Optional[list[str]] = None,
-    ):
-        thread: Thread = self.db.execute(
-            select(Thread).where(Thread.guid == thread_id)
-        ).one()[0]
-        
-        thread.user_guid = uuid.UUID(user_id) if user_id else None
-        thread.metadata_ = metadata
-        if tags:
-            self.db.execute
-            thread.tags.update([
-                row[0] for row in self.db.execute(
-                    select(Tag).where(Tag.name.in_(tags))
-                ).fetchall()
-            ])
-        self.db.commit()
-    
-    @override
-    async def create_user_session(
-            self,
-            id: str,
-            started_at: str,
-            anon_user_id: str,
-            user_id: Optional[str],
-        ) -> dict:
-        return {}
-    
-    @override
-    async def update_user_session(
-            self, id: str, is_interactive: bool, ended_at: Optional[str]
-        ) -> dict:
-        return {}
-    
-    @override
-    async def delete_user_session(self, id: str) -> bool:
-        return True

@@ -10,7 +10,10 @@ from sqlalchemy import Boolean, CursorResult, Executable, PrimaryKeyConstraint, 
 from sqlalchemy.sql import select, insert, update, delete, func
 from sqlalchemy.sql.selectable import TypedReturnsRows
 from sqlalchemy.types import Integer, String, TypeEngine
-from sqlalchemy.orm import DeclarativeBase, InstrumentedAttribute, Mapped, MappedColumn, mapped_column, relationship, scoped_session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, InstrumentedAttribute, Mapped, MappedColumn, Session, mapped_column, relationship, scoped_session, sessionmaker
+
+from sqlalchemy.dialects.sqlite import insert as lite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .util import Thunk
 
@@ -21,6 +24,7 @@ __all__ = [
     "update",
     "delete",
     "func",
+    "insert_with_on_conflict",
     
     'UUID',
     'JSON',
@@ -41,6 +45,17 @@ PrimaryKey = PrimaryKeyConstraint
 
 class Base(DeclarativeBase):
     pass
+
+def insert_with_on_conflict(session: Session, table: type[Base]):
+    if session.bind is None:
+        raise ValueError("Session is not bound to an engine")
+    
+    if session.bind.dialect.name == 'sqlite':
+        return lite_insert(table)
+    elif session.bind.dialect.name == 'postgresql':
+        return pg_insert(table)
+    else:
+        raise NotImplementedError(f"Unsupported dialect: {session.bind.dialect.name}")
 
 type DeferColumn[T] = Thunk[InstrumentedAttribute[T]]
 
@@ -207,6 +222,3 @@ class Database:
     
     def execute(self, statement, params=None):
         return self.session.execute(statement, params)
-    
-    def executemany(self, statement: Executable, params: MultiExecParams):
-        return self.session.executemany
