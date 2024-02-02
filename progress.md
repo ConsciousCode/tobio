@@ -10,7 +10,7 @@ Complete stage 1
 [ ] Embed all messages and store in vector database
 [ ] RAG by cosine similarity
 [ ] Tool use
-[ ] Add user commands
+[x] Add user commands
 Complete stage 2
 
 perplexity.ai/pro?referral_code=HNXBLKQW
