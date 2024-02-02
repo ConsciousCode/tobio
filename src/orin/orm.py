@@ -3,13 +3,13 @@ Thin wrapper around SQLAlchemy's ORM to narrow it to a restricted subset and
 provide helpers.
 '''
 
-from types import UnionType
-import typing
-from typing import Any, Callable, Literal, Mapping, Optional, Self, Sequence, TypeAlias, Union, cast, dataclass_transform, get_args, get_origin, overload, override
-from sqlalchemy import CursorResult, Executable, PrimaryKeyConstraint, Result, UpdateBase, create_engine
+from typing import Any, Callable, Literal, Mapping, Optional, Self, Sequence, TypeAlias, Union, cast, get_args, get_origin, overload, override
+import uuid
+
+from sqlalchemy import Boolean, CursorResult, Executable, PrimaryKeyConstraint, Result, UpdateBase, Uuid, create_engine, JSON
 from sqlalchemy.sql import select, insert, update, delete, func
 from sqlalchemy.sql.selectable import TypedReturnsRows
-from sqlalchemy.types import Integer, String
+from sqlalchemy.types import Integer, String, TypeEngine
 from sqlalchemy.orm import DeclarativeBase, InstrumentedAttribute, Mapped, MappedColumn, mapped_column, relationship, scoped_session, sessionmaker
 
 from .util import Thunk
@@ -22,6 +22,9 @@ __all__ = [
     "delete",
     "func",
     
+    'UUID',
+    'JSON',
+    
     # Alias exports
     "PrimaryKey",
     
@@ -33,6 +36,7 @@ __all__ = [
     "Database"
 ]
 
+UUID = uuid.UUID
 PrimaryKey = PrimaryKeyConstraint
 
 class Base(DeclarativeBase):
@@ -46,36 +50,65 @@ class Column[T](Mapped[T]):
         primary_key=False,
         foreign_key: Optional[DeferColumn]=None,
         unique=False,
-        default: Optional[Any]=None
+        default: Optional[Any]=None,
+        nullable=False
     ) -> Mapped[T]:
         t = cls.__args__[0] # type: ignore [attr-defined]
-        ct = {
-            int: Integer,
-            str: String
-        }.get(t) # type: ignore
         
-        nullable = False
-        
-        if ct is None:
-            origin, args = get_origin(t), get_args(t)
+        if isinstance(t, TypeEngine):
+            ct = t
+        else:
+            CT_MAP: dict[Any, type[TypeEngine]] = {
+                int: Integer,
+                str: String,
+                bool: Boolean,
+                uuid.UUID: Uuid,
+                Any: JSON,
+                dict: JSON
+            }
+            ct = CT_MAP.get(t)
             
-            if origin is Union:
-                if len(args) != 2 or type(None) not in args:
-                    raise TypeError(f"Unsupported Union type: {t}")
-                ct = next(a for a in args if a is not type(None))
-                nullable = True
-            else:
-                raise TypeError(f"Unsupported type: {t}")
+            if ct is None:
+                origin, args = get_origin(t), get_args(t)
+                
+                if origin is dict:
+                    ct = JSON
+                elif origin is Literal:
+                    lt: type = type(args[0])
+                    if not all(isinstance(a, lt) for a in args):
+                        raise TypeError("Mixed type literals are not supported")
+                    ct = CT_MAP.get(lt)
+                    if ct is None:
+                        raise TypeError(f"Unsupported Literal type: {t}")
+                elif origin is Union:
+                    if len(args) != 2 or type(None) not in args:
+                        raise TypeError(f"Unsupported Union type: {t}")
+                    lt = next(a for a in args if a is not type(None))
+                    ct = CT_MAP.get(lt)
+                    if ct is None:
+                        raise TypeError(f"Unsupported Union type: {t}")
+                    nullable = True
+                else:
+                    raise TypeError(f"Unsupported type: {t}")
         
-        args = [ct] if name is None else [name, ct]
-        return mapped_column(
-            *args,
-            primary_key=primary_key,
-            foreign_key=foreign_key,
-            unique=unique,
-            nullable=nullable,
-            default=default
-        )
+        if name is None:
+            return mapped_column(
+                name, ct,
+                primary_key=primary_key,
+                foreign_key=foreign_key,
+                unique=unique,
+                nullable=nullable,
+                default=default
+            )
+        else:
+            return mapped_column(
+                ct,
+                primary_key=primary_key,
+                foreign_key=foreign_key,
+                unique=unique,
+                nullable=nullable,
+                default=default
+            )
     
     def __init__(self, /, *,
         primary_key=False,
@@ -91,63 +124,6 @@ class Column[T](Mapped[T]):
             unique=unique,
             default=default
         )
-"""
-@overload
-def column[T: TypeAlias](t: T, /, *,
-    primary_key=False,
-    foreign_key: Optional[DeferColumn]=None,
-    unique=False,
-    default: Optional[Any]=None
-) -> Mapped[T]: ...
-@overload
-def column[T](t: UnionType, /, *,
-    primary_key=False,
-    foreign_key: Optional[DeferColumn]=None,
-    unique=False,
-    default: Optional[Any]=None
-) -> Mapped[Optional[T]]: ...
-@overload
-def column[T](t: type[T], /, *,
-    primary_key=False,
-    foreign_key: Optional[DeferColumn]=None,
-    unique=False,
-    default: Optional[Any]=None
-) -> Mapped[T]: ...
-
-def column[T](t, /, *,
-        primary_key=False,
-        foreign_key: Optional[DeferColumn]=None,
-        unique=False,
-        default: Optional[Any]=None
-    ) -> Any:
-    '''Tighter type hinting.'''
-    
-    ct = {
-        int: Integer,
-        str: String
-    }.get(t) # type: ignore
-    
-    nullable = False
-    
-    if ct is None:
-        origin, args = get_origin(t), get_args(t)
-        
-        if origin is Union:
-            if len(args) != 2 or type(None) not in args:
-                raise TypeError(f"Unsupported Union type: {t}")
-            ct = next(a for a in args if a is not type(None))
-            nullable = True
-        else:
-            raise TypeError(f"Unsupported type: {t}")
-    
-    return mapped_column(ct,
-        primary_key=primary_key,
-        foreign_key=foreign_key,
-        unique=unique,
-        nullable=nullable,
-        default=default
-    )
-"""
 
 class Relationship[T, M](Mapped[M]):
     def __init__(self,
@@ -204,7 +180,7 @@ type MultiExecParams = Sequence[SingleExecParams]
 type ExecParams = SingleExecParams | MultiExecParams
 
 class Database:
-    def __init__(self, url):
+    def __init__(self, url: str):
         self.engine = create_engine(url)
         Base.metadata.create_all(self.engine)
         self.session = scoped_session(sessionmaker(bind=self.engine))
@@ -232,3 +208,5 @@ class Database:
     def execute(self, statement, params=None):
         return self.session.execute(statement, params)
     
+    def executemany(self, statement: Executable, params: MultiExecParams):
+        return self.session.executemany
