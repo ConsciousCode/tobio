@@ -3,18 +3,100 @@ BOTTOM. UP. ONLY BOTTOM UP. DO NOTHING TOP-DOWN. Every change MUST result in a
 working program.
 '''
 
-from typing import Literal, NotRequired, Optional, Required, TypedDict, assert_never, cast, reveal_type
+from typing import Literal, Optional, assert_never, cast
+
 import chainlit as cl
-from chainlit.element import Text
+import chainlit.data as cl_data
+
+import openai as oai
 from openai.types.chat import ChatCompletionMessageParam
+import httpx
+
 from orin import load_config
 from orin.util import logger
-import openai as oai
-import httpx
-import json
 
 type Role = Literal["user", "assistant", "system", "tool"]
 type Message = ChatCompletionMessageParam
+
+"""
+class DataLayer(cl_data.BaseDataLayer):
+    def __init__(self, uri):
+        u = urlparse(uri)
+        if u.scheme not in {"", "file", "sqlite"}:
+            raise ValueError("Only SQLite is supported")
+        
+        self.conn = sqlite3.connect(u.path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript('''
+            PRAGMA foreign_keys = ON;
+            
+            CREATE TABLE IF NOT EXISTS threads (
+                guid TEXT PRIMARY KEY,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                deleted_at REAL,
+                title TEXT NOT NULL,
+                summary TEXT
+            );
+            
+            CREATE TABLE IF NOT EXISTS tags (
+                name TEXT NOT NULL
+            );
+            
+            CREATE TABLE IF NOT EXISTS step_tags (
+                step_guid TEXT NOT NULL,
+                tag_rowid INTEGER NOT NULL,
+                
+                PRIMARY KEY(step_id, tag_id)
+                FOREIGN KEY(step_guid) REFERENCES steps(guid)
+                FOREIGN KEY(tag_rowid) REFERENCES tags(rowid)
+            ) WITHOUT ROWID;
+            
+            CREATE TABLE IF NOT EXISTS steps (
+                guid TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                metadata TEXT,
+                parent_guid TEXT,
+                thread_guid TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                finished_at REAL,
+                
+                FOREIGN KEY(parent_guid) REFERENCES steps(guid),
+                FOREIGN KEY(thread_guid) REFERENCES threads(guid)
+            );
+        ''')
+    
+    async def get_user(self, identifier: str):
+        return cl.PersistedUser(id="test", createdAt=now, identifier=identifier)
+
+    async def create_user(self, user: cl.User):
+        return cl.PersistedUser(id="test", createdAt=now, identifier=user.identifier)
+
+    @cl_data.queue_until_user_message()
+    async def create_step(self, step_dict: StepDict):
+        global create_step_counter
+        create_step_counter += 1
+
+    async def get_thread_author(self, thread_id: str):
+        return "admin"
+
+    async def list_threads(
+        self, pagination: cl_data.Pagination, filter: cl_data.ThreadFilter
+    ) -> cl_data.PaginatedResponse[cl_data.ThreadDict]:
+        return cl_data.PaginatedResponse(
+            data=[t for t in thread_history if t["id"] not in deleted_thread_ids],
+            pageInfo=cl_data.PageInfo(hasNextPage=False, endCursor=None),
+        )
+
+    async def get_thread(self, thread_id: str):
+        return next((t for t in thread_history if t["id"] == thread_id), None)
+
+    async def delete_thread(self, thread_id: str):
+        deleted_thread_ids.append(thread_id)
+
+cl_data._data_layer = DataLayer()
+"""
 
 class Context:
     http: httpx.AsyncClient
@@ -125,6 +207,8 @@ async def on_chat_start():
     config = load_config("private/config.toml")
     context = await Context(config).__aenter__()
     cl.user_session.set("context", context)
+    
+    #cl_data._data_layer = DataLayer(config['memory']['database'])
 
 @cl.on_chat_end
 async def on_chat_end():
