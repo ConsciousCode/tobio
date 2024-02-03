@@ -4,7 +4,6 @@ import time
 from datetime import datetime
 
 import chainlit as cl
-from chainlit import TrueStepType
 import chainlit.types as cl_types
 from chainlit.element import ElementDict, ElementDisplay, ElementType
 from chainlit.step import StepDict
@@ -12,11 +11,23 @@ import chainlit.data as cl_data
 from chainlit.user import UserDict
 
 from literalai import PageInfo, PaginatedResponse
-from peewee import IntegrityError
+from literalai.step import StepType
 
-from .orm import Base, Column, Database, NoId, HasId, PrimaryKey, insert_with_on_conflict, many_to_one, one_to_many, many_to_many, select, update, insert, delete, func, UUID
+from .orm import Base, Column, Database, PrimaryKey, many_to_one, one_to_many, many_to_many, one_to_one, select, update, insert, delete, func, UUID
 
-class Tag(HasId):
+def optional_uuid(s: Optional[str]) -> Optional[UUID]:
+    return None if s is None else uuid.UUID(s)
+
+def optional_str(s: Optional[Any]) -> Optional[str]:
+    return None if s is None else str(s)
+
+def to_iso(ts: float) -> str:
+    return datetime.utcfromtimestamp(ts).isoformat()
+
+def from_iso(s: str) -> float:
+    return datetime.fromisoformat(s).timestamp()
+
+class Tag(Base):
     __tablename__ = "tags"
     
     id = Column[int](primary_key=True)
@@ -24,11 +35,11 @@ class Tag(HasId):
     
     def __init__(self, name: str): ...
 
-class StepTag(NoId):
+class StepTag(Base):
     __tablename__ = "step_tags"
     
-    step_guid = Column[UUID](foreign_key=lambda: Step.guid)
-    tag_rowid = Column[int](foreign_key=lambda: Tag.id)
+    step_guid = Column[UUID](foreign="steps.guid")
+    tag_rowid = Column[int](foreign="tags.id")
     
     def __init__(self, step_guid: UUID, tag_rowid: int): ...
     
@@ -36,11 +47,11 @@ class StepTag(NoId):
         PrimaryKey(step_guid, tag_rowid),
     )
 
-class ThreadTag(NoId):
+class ThreadTag(Base):
     __tablename__ = "thread_tags"
     
-    thread_guid = Column[UUID](foreign_key=lambda: Thread.guid)
-    tag_rowid = Column[int](foreign_key=lambda: Tag.id)
+    thread_guid = Column[UUID](foreign="threads.guid")
+    tag_rowid = Column[int](foreign="tags.id")
     
     def __init__(self, thread_guid: UUID, tag_rowid: int): ...
     
@@ -48,7 +59,7 @@ class ThreadTag(NoId):
         PrimaryKey(thread_guid, tag_rowid),
     )
 
-class User(HasId):
+class User(Base):
     __tablename__ = "users"
     
     guid = Column[UUID](primary_key=True)
@@ -57,7 +68,7 @@ class User(HasId):
     deleted_at = Column[Optional[float]](default=None)
     metadata_ = Column[Optional[dict]]("metadata")
     
-    def __init__(self, guid: UUID, name: str, created_at: float, metadata: Optional[Any]=None): ...
+    def __init__(self, guid: UUID, name: str, created_at: float, metadata_: Optional[Any]=None): ...
     
     threads = one_to_many(lambda: Thread, backref=lambda: Thread.user)
     sessions = one_to_many(lambda: UserSession, backref=lambda: UserSession.user)
@@ -69,17 +80,17 @@ class User(HasId):
             "metadata": self.metadata_ or {}
         }
 
-class UserSession(HasId):
+class UserSession(Base):
     __tablename__ = "user_sessions"
     
     guid = Column[UUID](primary_key=True)
     created_at = Column[float]()
     deleted_at = Column[Optional[float]](default=None)
     anon_user_id = Column[str]()
-    user_guid = Column[Optional[UUID]](foreign_key=lambda: User.guid)
+    user_guid = Column[Optional[UUID]](foreign="users.guid")
     is_interactive = Column[bool]()
     
-    def __init__(self, guid: UUID, started_at: float, anon_user_id: str, user_guid: Optional[UUID]=None, is_interactive=False): ...
+    def __init__(self, guid: UUID, created_at: float, anon_user_id: str, user_guid: Optional[UUID]=None, is_interactive=False): ...
     
     user = many_to_one(lambda: User, backref=lambda: User.sessions)
     
@@ -91,11 +102,11 @@ class UserSession(HasId):
             "userId": str(self.user_guid) if self.user_guid else None
         }
 
-class Thread(HasId):
+class Thread(Base):
     __tablename__ = "threads"
     
     guid = Column[UUID](primary_key=True)
-    user_guid = Column[Optional[UUID]](foreign_key=lambda: User.guid)
+    user_guid = Column[Optional[UUID]](foreign="users.guid")
     title = Column[str]()
     created_at = Column[float]()
     updated_at = Column[float]()
@@ -103,32 +114,33 @@ class Thread(HasId):
     summary = Column[Optional[str]]()
     metadata_ = Column[Optional[Any]]("metadata")
     
-    def __init__(self, guid: UUID, user_guid: Optional[UUID], title: str, created_at: float, updated_at: float, summary: Optional[str]=None, metadata: Optional[Any]=None): ...
+    def __init__(self, guid: UUID, user_guid: Optional[UUID], title: str, created_at: float, updated_at: float, summary: Optional[str]=None, metadata_: Optional[Any]=None): ...
     
     user = many_to_one(lambda: User, backref=lambda: User.threads)
     tags = many_to_many(lambda: Tag, secondary=lambda: ThreadTag)
     steps = one_to_many(lambda: Step, backref=lambda: Step.thread)
     elements = one_to_many(lambda: Element, backref=lambda: Element.thread)
 
-class Step(HasId):
+class Step(Base):
     __tablename__ = "steps"
     
     guid = Column[UUID](primary_key=True)
     name = Column[str]()
-    type = Column[TrueStepType]()
+    type = Column[StepType]()
     metadata_ = Column[Optional[Any]]("metadata")
-    parent_guid = Column[Optional[UUID]](foreign_key=lambda: Step.guid)
-    thread_guid = Column[UUID](foreign_key=lambda: Thread.guid)
+    parent_guid = Column[Optional[UUID]](foreign="steps.guid")
+    thread_guid = Column[UUID](foreign="threads.guid")
     created_at = Column[float]()
     finished_at = Column[Optional[float]]()
     deleted_at = Column[Optional[float]](default=None)
     
-    def __init__(self, guid: UUID, name: str, type: TrueStepType, metadata: Optional[Any], parent_guid: Optional[UUID], thread_guid: Optional[UUID], created_at: float, finished_at: Optional[float]=None): ...
+    def __init__(self, guid: UUID, name: str, type: StepType, metadata_: Optional[Any], parent_guid: Optional[UUID], thread_guid: Optional[UUID], created_at: float, finished_at: Optional[float]=None): ...
     
     thread = many_to_one(lambda: Thread, backref=lambda: Thread.steps)
     parent = many_to_one(lambda: Step, backref=lambda: Step.children)
     children = one_to_many(lambda: Step, backref=lambda: Step.parent)
     tags = many_to_many(lambda: Tag, secondary=lambda: StepTag)
+    feedback = one_to_one(lambda: Feedback, backref=lambda: Feedback.step)
     
     def to_dict(self) -> StepDict:
         metadata = self.metadata_ or {}
@@ -137,7 +149,7 @@ class Step(HasId):
             "type": self.type,
             "id": str(self.guid),
             "threadId": str(self.thread_guid),
-            "parentId": str(self.parent_guid) if self.parent_guid else None,
+            "parentId": optional_str(self.parent_guid),
             "disableFeedback": metadata.get("disableFeedback", False),
             "streaming": metadata.get("streaming", False),
             "waitForAnswer": metadata.get("waitForAnswer"),
@@ -145,7 +157,7 @@ class Step(HasId):
             "metadata": metadata,
             "input": metadata.get("input", ""),
             "output": metadata.get("output", ""),
-            "createdAt": datetime.utcfromtimestamp(self.created_at).isoformat(),
+            "createdAt": to_iso(self.created_at),
             "start": None,
             "end": None,
             "generation": None,
@@ -155,18 +167,18 @@ class Step(HasId):
             "feedback": None
         }
 
-class Element(HasId):
+class Element(Base):
     __tablename__ = "elements"
     
     guid = Column[UUID](primary_key=True)
     type = Column[ElementType]()
     metadata_ = Column[Optional[Any]]("metadata")
-    thread_guid = Column[UUID](foreign_key=lambda: Thread.guid)
+    thread_guid = Column[Optional[UUID]](foreign="threads.guid")
     display = Column[ElementDisplay]()
     created_at = Column[float]()
     deleted_at = Column[Optional[float]](default=None)
     
-    def __init__(self, guid: UUID, type: ElementType, metadata: Optional[Any], thread_guid: UUID, display: ElementDisplay, created_at: float): ...
+    def __init__(self, guid: UUID, type: ElementType, metadata_: Optional[Any], thread_guid: Optional[UUID], display: ElementDisplay, created_at: float): ...
     
     thread = many_to_one(lambda: Thread, backref=lambda: Thread.elements)
     
@@ -174,7 +186,7 @@ class Element(HasId):
         metadata = self.metadata_ or {}
         return {
             "id": str(self.guid),
-            "threadId": str(self.thread_guid),
+            "threadId": optional_str(self.thread_guid),
             "type": self.type,
             "chainlitKey": metadata.get("chainlitKey"),
             "url": metadata.get("url"),
@@ -188,17 +200,19 @@ class Element(HasId):
             "mime": metadata.get("mime")
         }
 
-class Feedback(HasId):
+class Feedback(Base):
     __tablename__ = "feedback"
     
     guid = Column[UUID](primary_key=True)
-    step_guid = Column[UUID](foreign_key=lambda: Step.guid)
+    step_guid = Column[UUID](foreign="steps.guid")
     value = Column[Literal[-1, 0, 1]]()
     strategy = Column[cl_types.FeedbackStrategy]()
     created_at = Column[float]()
     comment = Column[Optional[str]]()
     
     def __init__(self, guid: UUID, step_guid: UUID, value: Literal[-1, 0, 1], strategy: cl_types.FeedbackStrategy, created_at: float, comment: Optional[str]): ...
+    
+    step = one_to_one(lambda: Step, backref=lambda: Step.feedback)
 
 class DataLayer(cl_data.BaseDataLayer):
     def __init__(self, uri):
@@ -224,7 +238,7 @@ class DataLayer(cl_data.BaseDataLayer):
         self.db.add(User(guid, user.identifier, ct, None))
         return cl.PersistedUser(
             id=str(guid),
-            createdAt=datetime.utcfromtimestamp(ct).isoformat(),
+            createdAt=to_iso(ct),
             identifier=user.identifier
         )
     
@@ -238,7 +252,7 @@ class DataLayer(cl_data.BaseDataLayer):
         
         session.is_interactive = is_interactive
         if ended_at:
-            session.deleted_at = datetime.fromisoformat(ended_at).timestamp()
+            session.deleted_at = from_iso(ended_at)
         
         self.db.commit()
         return session.to_dict()
@@ -253,7 +267,7 @@ class DataLayer(cl_data.BaseDataLayer):
         ) -> dict:
         return self.db.add(UserSession(
             guid=uuid.UUID(id),
-            started_at=datetime.fromisoformat(started_at).timestamp(),
+            created_at=from_iso(started_at),
             anon_user_id=anon_user_id,
             user_guid=uuid.UUID(user_id) if user_id else None
         )).to_dict()
@@ -271,32 +285,66 @@ class DataLayer(cl_data.BaseDataLayer):
     @override
     @cl_data.queue_until_user_message()
     async def create_step(self, step_dict: StepDict):
-        # TODO: StepDict.id exists
-        guid = uuid.uuid4()
-        thread_id = step_dict.get("threadId")
-        thread = None if thread_id is None else uuid.UUID(thread_id)
         self.db.add(Step(
-            guid,
+            uuid.uuid4(),
             name=step_dict.get("name", "undefined"),
-            type=step_dict.get('type'),
-            metadata=step_dict.get("metadata"),
+            type=step_dict.get('type', "undefined"),
+            metadata_=step_dict.get("metadata"),
             parent_guid=step_dict.get("parent"),
-            thread_guid=thread,
+            thread_guid=optional_uuid(step_dict.get("threadId")),
             created_at=time.time()
         ))
     
     @override
     @cl_data.queue_until_user_message()
     async def update_step(self, step_dict: StepDict):
-        self.db.execute(
-            update(Step).where(Step.guid == step_dict.get('id')).values(
-                name=step_dict.get("name", "undefined"),
-                type=step_dict.get('type'),
-                metadata=step_dict.get("metadata"),
-                parent_guid=step_dict.get("parent"),
-                finished_at=step_dict.get("end")
-            )
-        )
+        step: Step = self.db.execute(
+            select(Step).where(Step.guid == step_dict.get('id'))
+        ).one()[0]
+        
+        if name := step_dict.get("name"):
+            step.name = name
+        if type := step_dict.get("type"):
+            step.type = type
+        if thread := step_dict.get("threadId"):
+            step.thread_guid = uuid.UUID(thread)
+        
+        step.parent_guid = optional_uuid(step_dict.get("parentId"))
+        
+        # start is considered immutable
+        if end := step_dict.get("end"):
+            step.finished_at = from_iso(end)
+        
+        if new_md := step_dict.get("metadata"):
+            step.metadata_ = {
+                **(step.metadata_ or {}),
+                **new_md,
+                "disableFeedback": step_dict.get("disableFeedback", False),
+                "streaming": step_dict.get("streaming", False),
+                "waitForAnswer": step_dict.get("waitForAnswer"),
+                "isError": step_dict.get("isError"),
+                "input": step_dict.get("input", ""),
+                "output": step_dict.get("output", ""),
+                "createdAt": step_dict.get("createdAt"),
+                "generation": step_dict.get("generation"),
+                "showInput": step_dict.get("showInput"),
+                "language": step_dict.get("language"),
+                "indent": step_dict.get("indent")
+            }
+        else:
+            step.metadata_ = None
+        
+        if feedback := step_dict.get("feedback"):
+            if step.feedback is None:
+                step.feedback = self.db.add(Feedback(
+                    uuid.uuid4(),
+                    step.guid,
+                    feedback.get("value"),
+                    feedback.get("strategy"),
+                    time.time(),
+                    feedback.get("comment")
+                ))
+        
         self.db.commit()
     
     @override
@@ -323,16 +371,44 @@ class DataLayer(cl_data.BaseDataLayer):
             filters: cl_types.ThreadFilter
         ) -> PaginatedResponse[cl_types.ThreadDict]:
         # TODO: pagination
+        
+        after_row = self.db.execute(
+            select(Thread).where(Thread.guid == pagination.cursor)
+        ).one_or_none()
+        after: float = after_row[0].created_at if after_row else 0
+        
+        query = (select(Thread)
+            .where(Thread.deleted_at == None)
+            .where(Thread.created_at > after)
+        )
+        if filters.userIdentifier:
+            query = query.where(
+                Thread.user_guid == uuid.UUID(filters.userIdentifier)
+            )
+        
+        if filters.search:
+            query = query.where(
+                Thread.title.ilike(f"%{filters.search}%")
+            )
+        
+        if filters.feedback:
+            query = query.join(Step).join(Feedback).where(
+                Feedback.value == filters.feedback
+            )
+        
         threads = self.db.execute(
-            select(Thread).where(Thread.deleted_at == None)
+            query
+                .order_by(Thread.created_at.desc())
+                .limit(pagination.first + 1)
         ).fetchall()
+        hasNextPage = (len(threads) > pagination.first)
         
         data: list[cl_types.ThreadDict] = []
         for tr in threads:
             thread: Thread = tr[0]
             data.append({
                 "id": str(thread.guid),
-                "createdAt": datetime.utcfromtimestamp(thread.created_at).isoformat(),
+                "createdAt": to_iso(thread.created_at),
                 "user": thread.user.to_dict(),
                 "tags": [tag.name for tag in thread.tags],
                 "metadata": thread.metadata_,
@@ -341,7 +417,10 @@ class DataLayer(cl_data.BaseDataLayer):
             })
         
         return PaginatedResponse(
-            PageInfo(hasNextPage=False, endCursor=None), data
+            PageInfo(
+                hasNextPage=hasNextPage,
+                endCursor=threads[-1][0].id if hasNextPage else None
+            ), data
         )
     
     @override
@@ -354,20 +433,22 @@ class DataLayer(cl_data.BaseDataLayer):
         ):
         '''Undocumented, but this is an upsert not an update.'''
         
+        thread_guid = uuid.UUID(thread_id)
+        
         row = self.db.execute(
-            select(Thread).where(Thread.guid == thread_id)
+            select(Thread).where(Thread.guid == thread_guid)
         ).fetchone()
         # Insert
         if row is None:
             md = metadata or {}
             now = time.time()
             thread = self.db.add(Thread(
-                uuid.UUID(thread_id),
-                user_guid=uuid.UUID(user_id) if user_id else None,
+                thread_guid,
+                user_guid=optional_uuid(user_id),
                 title=md.get("title", "undefined"),
                 created_at=now,
                 updated_at=now,
-                metadata=metadata
+                metadata_=metadata
             ))
             return
         
@@ -402,7 +483,7 @@ class DataLayer(cl_data.BaseDataLayer):
         # Update
         if feedback.id:
             self.db.execute(
-                update(Feedback).where(Feedback.id == feedback.id).values(
+                update(Feedback).where(Feedback.guid == feedback.id).values(
                     value=feedback.value,
                     strategy=feedback.strategy,
                     comment=feedback.comment
@@ -427,11 +508,11 @@ class DataLayer(cl_data.BaseDataLayer):
     @cl_data.queue_until_user_message()
     async def create_element(self, element_dict: ElementDict):
         guid = uuid.uuid4()
-        thread_id = uuid.UUID(element_dict.get("threadId", ""))
+        thread_id = optional_uuid(element_dict.get("threadId"))
         self.db.add(Element(
             guid,
             type=element_dict.get("type"),
-            metadata=element_dict.get("metadata"),
+            metadata_=element_dict.get("metadata"),
             thread_guid=thread_id,
             display=element_dict.get("display"),
             created_at=time.time()

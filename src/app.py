@@ -13,6 +13,7 @@ from openai.types.chat import ChatCompletionMessageParam
 import httpx
 
 from orin import load_config
+from orin.memory import DataLayer
 from orin.util import logger
 
 type Role = Literal["user", "assistant", "system", "tool"]
@@ -128,7 +129,7 @@ async def on_chat_start():
     context = await Context(config).__aenter__()
     cl.user_session.set("context", context)
     
-    #cl_data._data_layer = DataLayer(config['memory']['database'])
+    cl_data._data_layer = DataLayer(config['memory']['database'])
 
 @cl.on_chat_end
 async def on_chat_end():
