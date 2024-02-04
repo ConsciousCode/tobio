@@ -3,14 +3,17 @@ Thin wrapper around SQLAlchemy's ORM to narrow it to a restricted subset and
 provide helpers.
 '''
 
+from contextlib import contextmanager
 from functools import cached_property
 import inspect
 from types import GenericAlias
-from typing import Any, Callable, Generic, Literal, Mapping, Optional, Self, Sequence, TypeAlias, TypeVar, Union, cast, get_args, get_origin, overload, override
+from typing import Any, Callable, Generic, Literal, Mapping, Optional, Self, Sequence, TypeAlias, TypeVar, Union, cast, dataclass_transform, get_args, get_origin, overload, override
 from urllib.parse import urlparse
 import uuid
+from nio import dataclass
 
 from sqlalchemy import Boolean, CursorResult, Executable, Float, ForeignKey, PrimaryKeyConstraint, Result, UpdateBase, Uuid, create_engine, JSON
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.sql import select, insert, update, delete, func
 from sqlalchemy.sql.selectable import TypedReturnsRows
 from sqlalchemy.types import Integer, String, TypeEngine
@@ -29,12 +32,12 @@ __all__ = [
     'UUID',
     'JSON',
     
+    "NoResultFound",
+    
     # Alias exports
     "PrimaryKey",
     
     # New exports
-    "Base",
-    "Base",
     "Base",
     'Column',
     "Database",
@@ -47,9 +50,6 @@ __all__ = [
 
 UUID = uuid.UUID
 PrimaryKey = PrimaryKeyConstraint
-
-class Base(DeclarativeBase):
-    pass
 
 type DeferColumn[T] = Thunk[InstrumentedAttribute[T]]
 
@@ -159,7 +159,7 @@ class Relationship[T, M](Mapped[M]):
     def __init__(self,
             table: Thunk[type[T]],
             backref: Optional[DeferColumn]=None,
-            secondary: Optional[Thunk[type[Base]]]=None
+            secondary: Optional[Thunk[type['Base']]]=None
         ):
         self.table = table
         self.backref = backref
@@ -186,21 +186,28 @@ class Relationship[T, M](Mapped[M]):
         setattr(owner, self.name, rel)
         return cast(InstrumentedAttribute[M]|M, rel.__get__(instance, owner))
 
-def one_to_one[T: Base](table: Thunk[type[T]], /, *, backref: Optional[DeferColumn]=None) -> Mapped[T]:
+def one_to_one[T: 'Base'](table: Thunk[type[T]], /, *, backref: Optional[DeferColumn]=None) -> Mapped[T]:
     '''This one row referring to one other row.'''
     return Relationship[T, T](table, backref)
 
-def one_to_many[T: Base](table: Thunk[type[T]], /, *, backref: Optional[DeferColumn]=None) -> Mapped[list[T]]:
+def one_to_many[T: 'Base'](table: Thunk[type[T]], /, *, backref: Optional[DeferColumn]=None) -> Mapped[list[T]]:
     '''This one row referring to many rows.'''
     return Relationship[T, list[T]](table, backref)
 
-def many_to_one[T: Base](table: Thunk[type[T]], /, *, backref: Optional[DeferColumn]=None) -> Mapped[T]:
+def many_to_one[T: 'Base'](table: Thunk[type[T]], /, *, backref: Optional[DeferColumn]=None) -> Mapped[T]:
     '''Many rows referring to one row.'''
     return Relationship[T, T](table, backref)
 
-def many_to_many[T: Base](table: Thunk[type[T]], /, *, secondary: Thunk[type[Base]], backref: Optional[DeferColumn]=None) -> Mapped[set[T]]:
+def many_to_many[T: 'Base'](table: Thunk[type[T]], /, *, secondary: Thunk[type['Base']], backref: Optional[DeferColumn]=None) -> Mapped[set[T]]:
     '''Many rows referring to some subset of many other rows.'''
     return Relationship[T, set[T]](table, backref, secondary)
+
+@dataclass_transform(
+    kw_only_default=True,
+    field_specifiers=(Column,)
+)
+class Base(DeclarativeBase):
+    pass
 
 type SingleExecParams = Mapping[str, Any]
 type MultiExecParams = Sequence[SingleExecParams]
@@ -216,18 +223,17 @@ class Database:
         Base.metadata.create_all(self.engine)
         self.session = scoped_session(sessionmaker(bind=self.engine))
     
-    def add[T: Base](self, row: T) -> T:
-        with self.session() as session:
-            session.add(row)
-        return row
-    
-    def add_all(self, *args: Base) -> tuple[Base, ...]:
-        with self.session() as session:
-            session.add_all(args)
-        return args
-    
-    def commit(self):
-        self.session.commit()
+    @contextmanager
+    def transaction(self):
+        session = self.session()
+        try:
+            yield session
+            session.commit()
+        except:
+            session.rollback()
+            raise
+        finally:
+            session.close()
     
     @overload
     def execute[T: tuple](self, statement: TypedReturnsRows[T], params: Optional[ExecParams]=None) -> Result[T]: ...

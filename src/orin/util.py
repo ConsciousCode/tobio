@@ -1,15 +1,13 @@
 from abc import ABCMeta
 import asyncio
-from functools import cache, cached_property
+from functools import cache
 import sys
 import time
 import importlib.util
 import logging
 import os
-from types import GenericAlias, UnionType
-import traceback
-import typing
-from typing import Annotated, Any, AnyStr, Callable, ClassVar, ForwardRef, Literal, LiteralString, Optional, Self, Sequence, TypeAlias, TypeAliasType, TypeGuard, Union, cast, get_args, get_origin, get_type_hints, overload
+from types import GenericAlias
+from typing import Annotated, Any, AnyStr, Callable, ClassVar, ForwardRef, Literal, LiteralString, Optional, Self, Sequence, TypeAliasType, cast, get_args, get_origin, get_type_hints, overload
 from collections.abc import Iterable
 from weakref import WeakKeyDictionary
 
@@ -49,6 +47,8 @@ if LOG_LEVEL := os.getenv("LOG_LEVEL", LOG_LEVEL).upper():
     logger.addHandler(ColorLogHandler())
     logger.setLevel(LOG_LEVEL)
     logger.info(f"Set log level to {LOG_LEVEL}")
+elif os.getenv("LOGLEVEL"):
+    logger.warning("Use LOG_LEVEL, not LOGLEVEL")
 
 if LOG_LEVEL == "DEBUG":
     asyncio.get_event_loop().set_debug(True)
@@ -106,7 +106,7 @@ def typename(t: TypeRef) -> str:
     if get_origin(t) is None:
         if not isinstance(t, type):
             t = type(t)
-        return t.__name__
+        return t.__name__ # type: ignore
     return str(t)
 
 def typecheck(value: Any, t: TypeRef) -> bool:
