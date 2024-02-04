@@ -3,10 +3,13 @@ BOTTOM. UP. ONLY BOTTOM UP. DO NOTHING TOP-DOWN. Every change MUST result in a
 working program.
 '''
 
+import json
 from typing import Literal, Optional, assert_never, cast
 
 import chainlit as cl
 import chainlit.data as cl_data
+from chainlit.step import StepDict
+from chainlit.types import ThreadDict
 
 import openai as oai
 from openai.types.chat import ChatCompletionMessageParam
@@ -125,6 +128,7 @@ class Context:
 
 @cl.on_chat_start
 async def on_chat_start():
+    logger.debug("on_chat_start")
     config = load_config("private/config.toml")
     context = await Context(config).__aenter__()
     cl.user_session.set("context", context)
@@ -133,8 +137,37 @@ async def on_chat_start():
 
 @cl.on_chat_end
 async def on_chat_end():
+    logger.debug("on_chat_end")
     context = cast(Context, cl.user_session.get("context"))
     await context.__aexit__(None, None, None)
+
+def step_to_message(step: StepDict) -> Optional[Message]:
+    role: Optional[Literal['user', 'assistant', 'system']] = {
+        "user_message": "user",
+        "assistant_message": "assistant",
+        "system_message": "system"
+    }.get(step['type']) # type: ignore
+    
+    if role is None:
+        return None
+    
+    msg = {
+        "role": role,
+        "content": step.get("output")
+    }
+    if name := step.get("name"):
+        msg['name'] = name
+    
+    return msg # type: ignore
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    logger.debug("on_chat_resume")
+    context = cast(Context, cl.user_session.get("context"))
+    context.history = list(filter(None,
+        (step_to_message(step) for step in thread["steps"])
+    ))
+    print(json.dumps(context.history, indent=2))
 
 @cl.step(type="run", name="command")
 async def command(context: Context, cmd: str, rest: str):

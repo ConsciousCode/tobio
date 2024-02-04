@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Literal, Optional, override
+from typing import Any, Literal, Optional, override
 import uuid
 import time
 from datetime import datetime
@@ -12,9 +12,8 @@ from chainlit.user import UserDict
 
 from literalai import PageInfo, PaginatedResponse
 from literalai.step import StepType
-from sqlalchemy.orm import Mapped
 
-from .orm import Base, Column, Database, PrimaryKey, many_to_one, one_to_many, many_to_many, one_to_one, select, update, insert, delete, func, UUID, NoResultFound
+from .orm import Base, Column, Database, PrimaryKey, many_to_one, one_to_many, many_to_many, one_to_one, select, update, delete, UUID, NoResultFound, Mapped
 from .util import logger
 
 def optional_uuid(s: Optional[str]) -> Optional[UUID]:
@@ -239,7 +238,7 @@ class DataLayer(cl_data.BaseDataLayer):
     
     @override
     async def create_user(self, user: cl.User):
-        #logger.debug(f"Creating user %s", user.identifier)
+        logger.debug(f"Creating user %s", user.identifier)
         guid = uuid.uuid4()
         ct = time.time()
         with self.db.transaction() as session:
@@ -260,18 +259,24 @@ class DataLayer(cl_data.BaseDataLayer):
     async def update_user_session(
             self, id: str, is_interactive: bool, ended_at: Optional[str]
         ) -> dict:
-        #logger.debug(f"Updating session %s", id)
+        logger.debug(f"Updating session %s", id)
         
         with self.db.transaction() as session:
-            us: UserSession = session.execute(
-                select(UserSession).where(UserSession.guid == uuid.UUID(id))
-            ).one()[0]
-            
-            us.is_interactive = is_interactive
-            if ended_at:
-                us.deleted_at = from_iso(ended_at)
-            
-            return us.to_dict()
+            try:
+                us: UserSession = session.execute(
+                    select(UserSession).where(UserSession.guid == uuid.UUID(id))
+                ).one()[0]
+                
+                us.is_interactive = is_interactive
+                if ended_at:
+                    us.deleted_at = from_iso(ended_at)
+                
+                return us.to_dict()
+            except NoResultFound:
+                logger.warn("Stale session %s", id)
+                # The return is unused by the caller, but return something invalid
+                #  so if they ever do use it we get a clear error
+                return None # type: ignore
     
     @override
     async def create_user_session(
@@ -282,18 +287,19 @@ class DataLayer(cl_data.BaseDataLayer):
             user_id: Optional[str],
         ) -> dict:
         '''Undocumented: Select or insert, not insert.'''
-        #logger.debug(f"Creating session %s", id)
+        logger.debug(f"create_user_session %s", id)
         with self.db.transaction() as session:
             cur = session.execute(
                 select(UserSession).where(UserSession.guid == uuid.UUID(id))
             ).one_or_none()
             if cur:
+                logger.debug(f"Session %s already exists, recovering", id)
                 return cur[0].to_dict()
             us = UserSession(
                 guid=uuid.UUID(id),
                 created_at=from_iso(started_at),
                 anon_user_id=anon_user_id,
-                user_guid=uuid.UUID(user_id) if user_id else None,
+                user_guid=optional_uuid(user_id),
                 is_interactive=False
             )
             session.add(us)
@@ -493,7 +499,10 @@ class DataLayer(cl_data.BaseDataLayer):
             if tags:
                 # Ensure tags exist, then update the thread's tags
                 thread.tags.update(
-                    session.merge(Tag(id=None, name=tag)) for tag in tags
+                    session.merge(Tag(
+                        id=None, # type: ignore
+                        name=tag
+                    )) for tag in tags
                 )
     
     @override
