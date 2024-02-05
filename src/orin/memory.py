@@ -1,232 +1,93 @@
 from typing import Any, Literal, Optional, override
 import uuid
 import time
-from datetime import datetime
 
-import chainlit as cl
-import chainlit.types as cl_types
-from chainlit.element import ElementDict, ElementDisplay, ElementType
-from chainlit.step import StepDict
-import chainlit.data as cl_data
-from chainlit.user import UserDict
-
-from literalai import PageInfo, PaginatedResponse
-from literalai.step import StepType
-
-from .orm import Base, Column, Database, PrimaryKey, many_to_one, one_to_many, many_to_many, one_to_one, select, update, delete, UUID, NoResultFound, Mapped
+from .orm import Base, Column, Database, PrimaryKey, many_to_one, one_to_many, many_to_many, one_to_one, select, update, insert, delete, UUID, JSON, NoResultFound, Mapped
 from .util import logger
 
-def optional_uuid(s: Optional[str]) -> Optional[UUID]:
-    return None if s is None else uuid.UUID(s)
-
-def optional_str(s: Optional[Any]) -> Optional[str]:
-    return None if s is None else str(s)
-
-def to_iso(ts: float) -> str:
-    return datetime.utcfromtimestamp(ts).isoformat()
-
-def from_iso(s: str) -> float:
-    return datetime.fromisoformat(s).timestamp()
-
-class Tag(Base):
-    __tablename__ = "tags"
+class Persistent(Base):
+    __tablename__ = "persistent"
     
-    id: Mapped[int] = Column[int](primary_key=True)
-    name: Mapped[str] = Column[str](unique=True)
+    key: Mapped[str] = Column[str](primary_key=True)
+    value: Mapped[JSON] = Column[JSON]()
 
-class StepTag(Base):
-    __tablename__ = "step_tags"
-    
-    step_guid: Mapped[UUID] = Column[UUID](foreign="steps.guid")
-    tag_rowid: Mapped[int] = Column[int](foreign="tags.id")
-    
-    __table_args__ = (
-        PrimaryKey(step_guid, tag_rowid),
-    )
-
-class ThreadTag(Base):
-    __tablename__ = "thread_tags"
-    
-    thread_guid: Mapped[UUID] = Column[UUID](foreign="threads.guid")
-    tag_rowid: Mapped[int] = Column[int](foreign="tags.id")
-    
-    __table_args__ = (
-        PrimaryKey(thread_guid, tag_rowid),
-    )
-
-class User(Base):
-    __tablename__ = "users"
+class Author(Base):
+    __tablename__ = "authors"
     
     guid: Mapped[UUID] = Column[UUID](primary_key=True)
     name: Mapped[str] = Column[str](unique=True)
     created_at: Mapped[float] = Column[float]()
     deleted_at: Mapped[Optional[float]] = Column[Optional[float]](default=None)
-    metadata_: Mapped[Optional[dict]] = Column[Optional[dict]]("metadata")
-    
-    threads = one_to_many(lambda: Thread, backref=lambda: Thread.user)
-    sessions = one_to_many(lambda: UserSession, backref=lambda: UserSession.user)
-    
-    def to_dict(self) -> UserDict:
-        return {
-            "id": str(self.guid),
-            "identifier": self.name,
-            "metadata": self.metadata_ or {}
-        }
 
-class UserSession(Base):
-    __tablename__ = "user_sessions"
-    
-    guid: Mapped[UUID] = Column[UUID](primary_key=True)
-    created_at: Mapped[float] = Column[float]()
-    deleted_at: Mapped[Optional[float]] = Column[Optional[float]](default=None)
-    anon_user_id: Mapped[str] = Column[str]()
-    user_guid: Mapped[Optional[UUID]] = Column[Optional[UUID]](foreign="users.guid")
-    is_interactive: Mapped[bool] = Column[bool]()
-    
-    user = many_to_one(lambda: User, backref=lambda: User.sessions)
-    
-    def to_dict(self) -> dict:
-        return {
-            "id": str(self.guid),
-            "startedAt": datetime.utcfromtimestamp(self.created_at).isoformat(),
-            "anonUserId": self.anon_user_id,
-            "userId": str(self.user_guid) if self.user_guid else None
-        }
-
-class Thread(Base):
-    __tablename__ = "threads"
-    
-    guid: Mapped[UUID] = Column[UUID](primary_key=True)
-    user_guid: Mapped[Optional[UUID]] = Column[Optional[UUID]](foreign="users.guid")
-    title: Mapped[str] = Column[str]()
-    created_at: Mapped[float] = Column[float]()
-    updated_at: Mapped[float] = Column[float]()
-    deleted_at: Mapped[Optional[float]] = Column[Optional[float]](default=None)
-    summary: Mapped[Optional[str]] = Column[Optional[str]]()
-    metadata_: Mapped[Optional[Any]] = Column[Optional[Any]]("metadata")
-    
-    user = many_to_one(lambda: User, backref=lambda: User.threads)
-    tags = many_to_many(lambda: Tag, secondary=lambda: ThreadTag)
-    steps = one_to_many(lambda: Step, backref=lambda: Step.thread)
-    elements = one_to_many(lambda: Element, backref=lambda: Element.thread)
-
-class Step(Base):
-    __tablename__ = "steps"
+class Message(Base):
+    __tablename__ = "messages"
     
     guid: Mapped[UUID] = Column[UUID](primary_key=True)
     name: Mapped[str] = Column[str]()
-    type: Mapped[StepType] = Column[StepType]()
-    metadata_: Mapped[Optional[Any]] = Column[Optional[Any]]("metadata")
-    parent_guid: Mapped[Optional[UUID]] = Column[Optional[UUID]](foreign="steps.guid")
-    thread_guid: Mapped[UUID] = Column[UUID](foreign="threads.guid")
+    parent_guid: Mapped[Optional[UUID]] = Column[Optional[UUID]](foreign="messages.guid")
     created_at: Mapped[float] = Column[float]()
     finished_at: Mapped[Optional[float]] = Column[Optional[float]]()
     deleted_at: Mapped[Optional[float]] = Column[Optional[float]](default=None)
     
-    thread = many_to_one(lambda: Thread, backref=lambda: Thread.steps)
-    parent = many_to_one(lambda: Step, backref=lambda: Step.children)
-    children = one_to_many(lambda: Step, backref=lambda: Step.parent)
-    tags = many_to_many(lambda: Tag, secondary=lambda: StepTag)
-    feedback = one_to_one(lambda: Feedback, backref=lambda: Feedback.step)
-    
-    def to_dict(self) -> StepDict:
-        metadata = self.metadata_ or {}
-        return {
-            "name": self.name,
-            "type": self.type,
-            "id": str(self.guid),
-            "threadId": str(self.thread_guid),
-            "parentId": optional_str(self.parent_guid),
-            "disableFeedback": metadata.get("disableFeedback", False),
-            "streaming": metadata.get("streaming", False),
-            "waitForAnswer": metadata.get("waitForAnswer"),
-            "isError": metadata.get("isError"),
-            "metadata": metadata,
-            "input": metadata.get("input", ""),
-            "output": metadata.get("output", ""),
-            "createdAt": to_iso(self.created_at),
-            "start": None,
-            "end": None,
-            "generation": None,
-            "showInput": metadata.get("showInput"),
-            "language": metadata.get("language"),
-            "indent": metadata.get("indent"),
-            "feedback": None
-        }
-    
-    @staticmethod
-    def metadata_from_dict(d: StepDict) -> dict:
-        '''
-        StepDict has a lot of data we don't store in the table explicitly -
-        this function takes a StepDict and returns a dict that can be stored
-        in the metadata_ column.
-        '''
-        return {
-            **d.get("metadata", {}),
-            "disableFeedback": d.get("disableFeedback", False),
-            "streaming": d.get("streaming", False),
-            "waitForAnswer": d.get("waitForAnswer"),
-            "isError": d.get("isError"),
-            "input": d.get("input", ""),
-            "output": d.get("output", ""),
-            "createdAt": d.get("createdAt"),
-            "generation": d.get("generation"),
-            "showInput": d.get("showInput"),
-            "language": d.get("language"),
-            "indent": d.get("indent")
-        }
+    parent = many_to_one(lambda: Message, backref=lambda: Message.children)
+    children = one_to_many(lambda: Message, backref=lambda: Message.parent)
 
-class Element(Base):
-    __tablename__ = "elements"
-    
-    guid: Mapped[UUID] = Column[UUID](primary_key=True)
-    type: Mapped[ElementType] = Column[ElementType]()
-    metadata_: Mapped[Optional[Any]] = Column[Optional[Any]]("metadata")
-    thread_guid: Mapped[Optional[UUID]] = Column[Optional[UUID]](foreign="threads.guid")
-    display: Mapped[ElementDisplay] = Column[ElementDisplay]()
-    created_at: Mapped[float] = Column[float]()
-    deleted_at: Mapped[Optional[float]] = Column[Optional[float]](default=None)
-    
-    thread = many_to_one(lambda: Thread, backref=lambda: Thread.elements)
-    
-    def to_dict(self) -> ElementDict:
-        metadata = self.metadata_ or {}
-        return {
-            "id": str(self.guid),
-            "threadId": optional_str(self.thread_guid),
-            "type": self.type,
-            "chainlitKey": metadata.get("chainlitKey"),
-            "url": metadata.get("url"),
-            "objectKey": metadata.get("objectKey"),
-            "name": metadata.get("name", ""),
-            "display": metadata.get("display", "inline"),
-            "size": metadata.get("size"),
-            "language": metadata.get("language"),
-            "page": metadata.get("page"),
-            "forId": metadata.get("forId"),
-            "mime": metadata.get("mime")
-        }
-
-class Feedback(Base):
-    __tablename__ = "feedback"
-    
-    guid: Mapped[UUID] = Column[UUID](primary_key=True)
-    step_guid: Mapped[UUID] = Column[UUID](foreign="steps.guid")
-    value: Mapped[Literal[-1, 0, 1]] = Column[Literal[-1, 0, 1]]()
-    strategy: Mapped[cl_types.FeedbackStrategy] = Column[cl_types.FeedbackStrategy]()
-    created_at: Mapped[float] = Column[float]()
-    comment: Mapped[Optional[str]] = Column[Optional[str]]()
-    
-    step: Mapped[Step] = one_to_one(lambda: Step, backref=lambda: Step.feedback)
-
-class DataLayer(cl_data.BaseDataLayer):
+class Memory:
     def __init__(self, uri):
         self.db = Database(uri)
+        self.persistent_cache = {}
+    
+    def __getitem__(self, name):
+        if name in self.persistent_cache:
+            return self.persistent_cache[name]
+        
+        try:
+            value = self.db.execute(
+                select(Persistent).where(Persistent.key == name)
+            ).one()[0].value
+            self.persistent_cache[name] = value
+            return value
+        except NoResultFound:
+            raise KeyError(name) from None
+    
+    def __setitem__(self, name, value):
+        self.persistent_cache[name] = value
+        self.db.execute(
+            update(Persistent).where(Persistent.key == name).values(value=value)
+        )
+    
+    def author(self, name):
+        author = self.db.execute(
+            select(Author).where(Author.name == name)
+        ).one_or_none()
+        if author:
+            return author[0]
+        
+        guid = uuid.uuid4()
+        ct = time.time()
+        self.db.execute(
+            insert(Author).values(
+                guid=guid,
+                name=name,
+                created_at=ct
+            )
+        )
+        return guid
+    
+    def get_author(self, guid: uuid.UUID) -> Author:
+        return self.db.execute(
+            select(Author).where(Author.guid == guid)
+        ).one()[0]
+    
+    def get_messages(self, limit: int):
+         self.db.execute(
+            select(Message).limit(limit)
+        ).fetchall()
     
     @override
     async def get_user(self, identifier: str):
         user = self.db.execute(
-            select(User).where(User.name == identifier)
+            select(Author).where(Author.name == identifier)
         ).one()[0]
         
         return cl.PersistedUser(
@@ -242,7 +103,7 @@ class DataLayer(cl_data.BaseDataLayer):
         guid = uuid.uuid4()
         ct = time.time()
         with self.db.transaction() as session:
-            session.add(User(
+            session.add(Author(
                 guid=guid,
                 name=user.identifier,
                 created_at=ct,
@@ -321,11 +182,11 @@ class DataLayer(cl_data.BaseDataLayer):
     async def create_step(self, step_dict: StepDict):
         #logger.debug(f"Creating step %s", step_dict.get("id"))
         with self.db.transaction() as session:
-            step = Step(
+            step = Message(
                 guid=uuid.UUID(step_dict.get("id")),
                 name=step_dict.get("name", "undefined"),
                 type=step_dict.get('type', "undefined"),
-                metadata_=Step.metadata_from_dict(step_dict),
+                metadata_=Message.metadata_from_dict(step_dict),
                 parent_guid=step_dict.get("parent"),
                 thread_guid=uuid.UUID(step_dict["threadId"]),
                 created_at=time.time(),
@@ -339,8 +200,8 @@ class DataLayer(cl_data.BaseDataLayer):
         #logger.debug(f"Updating step %s", step_dict.get("id"))
         with self.db.transaction() as session:
             try:
-                step: Step = session.execute(
-                    select(Step).where(Step.guid == optional_uuid(step_dict.get('id')))
+                step: Message = session.execute(
+                    select(Message).where(Message.guid == optional_uuid(step_dict.get('id')))
                 ).one()[0]
             except NoResultFound:
                 logger.warn("Failed to find step %s", step_dict.get('id'))
@@ -362,7 +223,7 @@ class DataLayer(cl_data.BaseDataLayer):
             # Just unconditionally set it, there's too much to check
             step.metadata_ = {
                 **(step.metadata_ or {}),
-                **Step.metadata_from_dict(step_dict)
+                **Message.metadata_from_dict(step_dict)
             }
             
             if feedback := step_dict.get("feedback"):
@@ -383,7 +244,7 @@ class DataLayer(cl_data.BaseDataLayer):
         
         with self.db.transaction() as session:
             session.execute(
-                update(Step).where(Step.guid == uuid.UUID(step_id)).values(
+                update(Message).where(Message.guid == uuid.UUID(step_id)).values(
                     deleted_at=time.time()
                 )
             )
@@ -422,7 +283,7 @@ class DataLayer(cl_data.BaseDataLayer):
             )
         
         if filters.feedback:
-            query = query.join(Step).join(Feedback).where(
+            query = query.join(Message).join(Feedback).where(
                 Feedback.value == filters.feedback
             )
         

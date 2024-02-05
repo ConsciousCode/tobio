@@ -1,8 +1,7 @@
-[x] Attempt #6 - extreme bottom-up approach to avoid losing focus. Implement nothing except the absolute barest minimum and only make incremental changes.
-[x] Chatbot history
-[x] Chatbot history truncation
-[x] Recursive summarization
-[x] Chainlit steps
+[ ] Attempt #7 - doubly extreme bottom-up approach to avoid losing focus. Implement nothing except the absolute barest minimum and only make incremental changes.
+[ ] Chatbot history
+[ ] Chatbot history truncation
+[ ] Recursive summarization
 [ ] Save messages to sqlite
 [ ] authors table
 Complete stage 1

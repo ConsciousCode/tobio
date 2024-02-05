@@ -3,20 +3,18 @@ BOTTOM. UP. ONLY BOTTOM UP. DO NOTHING TOP-DOWN. Every change MUST result in a
 working program.
 '''
 
+from functools import cache
 import json
 from typing import Literal, Optional, assert_never, cast
+import uuid
 
-import chainlit as cl
-import chainlit.data as cl_data
-from chainlit.step import StepDict
-from chainlit.types import ThreadDict
+import streamlit as st
 
 import openai as oai
 from openai.types.chat import ChatCompletionMessageParam
 import httpx
 
 from orin import load_config
-from orin.memory import DataLayer
 from orin.util import logger
 
 type Role = Literal["user", "assistant", "system", "tool"]
@@ -126,106 +124,60 @@ class Context:
     def chatlog(self):
         return [self.chat_prompt, *self.history]
 
-@cl.on_chat_start
-async def on_chat_start():
-    logger.debug("on_chat_start")
-    config = load_config("private/config.toml")
-    context = await Context(config).__aenter__()
-    cl.user_session.set("context", context)
-    
-    cl_data._data_layer = DataLayer(config['memory']['database'])
+if 'config' not in st.session_state:
+    st.session_state.config = load_config("private/config.toml")
+config = st.session_state.config
 
-@cl.on_chat_end
-async def on_chat_end():
-    logger.debug("on_chat_end")
-    context = cast(Context, cl.user_session.get("context"))
-    await context.__aexit__(None, None, None)
+conn = st.connection("sql", url=config['memory']['database'])
+conn.connect()
 
-def step_to_message(step: StepDict) -> Optional[Message]:
-    role: Optional[Literal['user', 'assistant', 'system']] = {
-        "user_message": "user",
-        "assistant_message": "assistant",
-        "system_message": "system"
-    }.get(step['type']) # type: ignore
+@cache
+def author(name):
+    author = conn.query(
+        "SELECT id FROM authors WHERE name = ?",
+        params=(name,)
+    )
+    if len(author):
+        return author[0]
     
-    if role is None:
-        return None
-    
-    msg = {
-        "role": role,
-        "content": step.get("output")
-    }
-    if name := step.get("name"):
-        msg['name'] = name
-    
-    return msg # type: ignore
+    guid = uuid.uuid4()
+    conn.query(
+        "INSERT INTO authors (guid, name) VALUES (?, ?)",
+        params=(guid, name)
+    )
+    return guid
 
-@cl.on_chat_resume
-async def on_chat_resume(thread: ThreadDict):
-    logger.debug("on_chat_resume")
-    context = cast(Context, cl.user_session.get("context"))
-    context.history = list(filter(None,
-        (step_to_message(step) for step in thread["steps"])
-    ))
-    print(json.dumps(context.history, indent=2))
+def persistent(name, value):
+    if name in st.session_state:
+        return st.session_state[name]
+    st.session_state[name] = value
+    return value
 
-@cl.step(type="run", name="command")
-async def command(context: Context, cmd: str, rest: str):
-    match cmd:
-        case "history":
-            return {"history": context.history}
-        
-        case _:
-            return f"Unknown command {cmd}"
+if 'session_id' not in st.session_state:
+    session_id = uuid.uuid4()
+    conn.query(
+        "INSERT INTO sessions (id) VALUES (?)",
+        params=(str(session_id),)
+    )
+    st.session_state.session_id = uuid.uuid4()
 
-@cl.step(type="llm", name="orin")
-async def call_llm(context: Context, msg: cl.Message):
-    settings = context.config['models']['chat']
-    chatlog = context.chatlog()
-    
-    step = cl.context.current_step
-    if step is not None:
-        step.generation = cl.ChatGeneration(
-            provider="openai-chat",
-            messages=[
-                cl.GenerationMessage(
-                    role=m['role'],
-                    formatted=m['content'], # type: ignore
-                    name=m.get('name')
-                ) for m in chatlog
-            ],
-            settings=settings
-        )
-        step.input = msg.content
-        
-        msg = cl.Message(author="Orin", content="")
-        await msg.send()
-        
-        stream = await context.openai.chat.completions.create(
-            messages=context.chatlog(),
-            stream=True,
-            **settings,
-        )
-        
-        async for part in stream:
-            delta = part.choices[0].delta
-            if delta.content:
-                # Stream the output of the step
-                await msg.stream_token(delta.content)
-                
-                context.stream(delta.content)
-        
-        return msg.content
 
-@cl.on_message
-async def on_message(message: cl.Message):
-    context = cast(Context, cl.user_session.get("context"))
-    
-    content = message.content
-    if content.startswith("/") and not content.startswith("//"):
-        cmd, *rest = content[1:].split(None, 1)
-        rest = rest[0] if rest else ""
-        await command(context, cmd, rest)
-    else:
-        await context.add("user", message.content)
-        await call_llm(context, message)
+
+st.title("Hello world")
+
+if 'history' not in st.session_state:
+    st.session_state.history = []
+
+print(st.session_state)
+print(st.session_state.history)
+for message in st.session_state.history:
+    with st.chat_message(message['role']):
+        st.markdown(message['content'])
+
+if prompt := st.chat_input("What is up?"):
+    st.session_state.history.append({
+        "role": "user",
+        "content": prompt
+    })
+    with st.chat_message("user"):
+        st.markdown(prompt)
