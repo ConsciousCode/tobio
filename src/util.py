@@ -44,7 +44,7 @@ class ColorLogHandler(logging.Handler):
 logger = logging.getLogger("orin")
 LOG_LEVEL = "INFO"
 if LOG_LEVEL := os.getenv("LOG_LEVEL", LOG_LEVEL).upper():
-    #logger.addHandler(ColorLogHandler())
+    logger.addHandler(ColorLogHandler())
     logger.setLevel(LOG_LEVEL)
     logger.info(f"Set log level to {LOG_LEVEL}")
 elif os.getenv("LOGLEVEL"):

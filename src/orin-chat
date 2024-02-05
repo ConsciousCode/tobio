@@ -1,0 +1,14 @@
+#!/usr/bin/bash
+
+# Simplistic CLI script for testing websocket integration.
+#  Adding a socket file would work, too. Requires
+#  websocat.
+
+HOST=localhost:8000
+
+websocat ws://$HOST/chat | while IFS= read -r delta; do
+  if [ "$delta" = "" ]; then
+    echo
+  fi
+  printf "%s" "$delta"
+done

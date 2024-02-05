@@ -3,7 +3,6 @@
 import asyncio
 from contextlib import asynccontextmanager
 import sys
-import json
 import traceback
 import uvicorn
 import tomllib

@@ -1,5 +1,5 @@
 [x] Attempt #7 - doubly extreme bottom-up approach to avoid losing focus. Implement nothing except the absolute barest minimum and only make incremental changes.
-[ ] Chatbot history
+[x] Chatbot history
 [ ] Chatbot history truncation
 [ ] Recursive summarization
 [ ] Save messages to sqlite
