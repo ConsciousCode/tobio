@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS persistent (
  * Messages in a conversation
 **/
 CREATE TABLE IF NOT EXISTS messages (
-    author TEXT NOT NULL,
+    role TEXT NOT NULL,
+    name TEXT,
     created_at REAL NOT NULL,
     content TEXT
 );

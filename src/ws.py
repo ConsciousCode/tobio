@@ -30,9 +30,10 @@ app = FastAPI(debug=True, lifespan=lifespan)
 async def socket(ws: WebSocket):
     await ws.accept()
     try:
-        prompt = await ws.receive_text()
-        async for delta in orin.chat(prompt):
-            await ws.send_text(delta)
+        while True:
+            prompt = await ws.receive_text()
+            async for delta in orin.chat(prompt):
+                await ws.send_text(delta)
     except BaseException as e:
         content = ''.join(traceback.format_exception(e))
         await ws.send_text(content)
