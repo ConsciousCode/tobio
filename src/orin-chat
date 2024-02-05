@@ -6,9 +6,14 @@
 
 HOST=localhost:8000
 
-websocat ws://$HOST/chat | while IFS= read -r delta; do
-  if [ "$delta" = "" ]; then
-    echo
-  fi
-  printf "%s" "$delta"
+while read p; do
+  echo -n "Orin: "
+  echo "$p" | websocat ws://$HOST/chat | while IFS= read -r delta; do
+    if [ "$delta" = "" ]; then
+      echo
+    fi
+    printf "%s" "$delta"
+  done
+  echo
+  echo -n "User: "
 done

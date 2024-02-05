@@ -11,7 +11,8 @@ import time
 from urllib.parse import parse_qs, urlparse
 
 import openai
-from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
+from openai import AsyncStream
+from openai.types.chat import ChatCompletion, ChatCompletionChunk, ChatCompletionMessageParam
 
 import httpx
 
@@ -128,7 +129,6 @@ class Orin:
             self.db.executescript(f.read())
         
         self.history = self.sql_load_history()
-        print("History", self.history)
     
     async def __aenter__(self):
         self.http_client = httpx.AsyncClient()
@@ -176,7 +176,7 @@ class Orin:
         return result.choices[0].message.content # type: ignore
     
     async def llm_chat(self) -> AsyncGenerator[str, None]:
-        result = await self.openai_client.chat.completions.create(
+        result: AsyncStream[ChatCompletionChunk] = await self.openai_client.chat.completions.create(
             **self.models['chat'].to_openai(),
             messages=self.history,
             stream=True
@@ -193,12 +193,20 @@ class Orin:
     async def truncate(self, limit: int):
         if len(self.history) > limit:
             oldest, newest = self.history[:-limit], self.history[-limit:]
-            need_summary = (
-                # A summary was popped
-                any(m.get("name") == "summary" for m in oldest) or
-                # There's no summary in the history
-                not any(m.get("name") == "summary" for m in newest)
-            )
+            
+            need_summary = any(m.get("name") == "summary" for m in oldest)
+            
+            # Are we due for a summary based on frequency?
+            if len(newest):
+                # Find the last summary message
+                for i, m in enumerate(reversed(newest)):
+                    if m.get("name") == "summary":
+                        break
+                
+                summary_freq = limit//self.config['memory']['summary_count']
+                if len(newest) - i <= summary_freq: # type: ignore
+                    need_summary = True
+            
             if need_summary:
                 summary = await self.llm_summarize(self.history)
                 logger.info("Summary: %s", summary)
