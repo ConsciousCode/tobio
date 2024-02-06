@@ -52,7 +52,7 @@ async def socket(ws: WebSocket):
                     break
             
             # Stream
-            async for delta in orin.chat(prompt):
+            async for delta in orin.chat_cmd(prompt):
                 await ws.send_text(delta)
             
             # Halt

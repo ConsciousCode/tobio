@@ -11,7 +11,7 @@ import sqlite3
 import time
 from urllib.parse import parse_qs, urlparse
 import json
-from functools import cache
+from prettytable import PrettyTable
 
 import openai
 from openai import AsyncStream
@@ -109,6 +109,12 @@ class Message:
         self.name = name
         self.content = content
     
+    def __str__(self):
+        if self.name:
+            return f"[{self.role} {self.name}] {self.content}"
+        else:
+            return f"[{self.role}] {self.content}"
+    
     def to_openai(self) -> ChatCompletionMessageParam:
         d = {
             'role': self.role,
@@ -194,7 +200,7 @@ class Orin:
     http_client: httpx.AsyncClient
     openai_client: openai.AsyncClient
     
-    history: list[ChatCompletionMessageParam]
+    history: list[Message]
     
     def __init__(self, config: dict):
         self.models = {
@@ -235,13 +241,31 @@ class Orin:
         self.tools.update({tool.__name__: tool for tool in tools})
         self.tool_schema.extend(tool.to_openai() for tool in tools)
     
-    def sql_load_history(self) -> list[ChatCompletionMessageParam]:
+    def sql_raw(self, query: str):
+        t = time.time()
+        cur = self.db.execute(query)
+        result = cur.fetchall()
+        dt = time.time() - t
+        
+        if cur.rowcount == -1:
+            if len(result) == 0:
+                content = "empty set"
+            else:
+                table = PrettyTable(result[0].keys())
+                table.add_rows(result)
+                content = f"{table}\n\n{len(result)} rows in set"
+        else:
+            content = f"{cur.rowcount} affected"
+        
+        return f"{content} ({dt:.2f} sec)"
+    
+    def sql_load_history(self) -> list[Message]:
         messages = self.db.execute(f'''
             SELECT * FROM messages ORDER BY created_at DESC LIMIT
             {self.config['memory']['history_limit']}
         ''').fetchall()
         return [
-            Message(row['role'], row['name'], row['content']).to_openai()
+            Message(row['role'], row['name'], row['content'])
             for row in reversed(messages)
         ]
     
@@ -259,25 +283,31 @@ class Orin:
             'content': PROMPT_SUMMARY
         }
     
-    async def llm_summarize(self, history: list[ChatCompletionMessageParam]) -> str:
+    async def llm_summarize(self, history: list[Message]) -> str:
         result: ChatCompletion = await self.openai_client.chat.completions.create(
             **self.models['summarize'].to_openai(),
-            messages=[*history, self.prompt_summary()]
+            messages=[
+                msg.to_openai() for msg in [
+                    *history,
+                    Message('system', 'prompt', PROMPT_SUMMARY)
+                ]
+            ]
         )
         return result.choices[0].message.content # type: ignore
     
     async def llm_ensure_json(self, data: str) -> dict:
-        tries = []
+        tries: list[Message] = []
         for _ in range(3):
             try:
                 return json.loads(data)
             except json.JSONDecodeError:
-                logger.warn("Correcting JSON")
-                tries.append(data)
+                #logger.warn("Correcting JSON")
+                print("Correcting JSON", tries)
+                tries.append(Message("user", None, data))
                 result: ChatCompletion = await self.openai_client.chat.completions.create(
                     **self.models['json'].to_openai(),
                     messages=[
-                        *tries,
+                        *(msg.to_openai() for msg in tries),
                         Message('system', 'prompt', PROMPT_ENSURE_JSON).to_openai()
                     ]
                 )
@@ -287,11 +317,14 @@ class Orin:
     
     async def llm_chat(self) -> AsyncGenerator[Delta, Optional[Any]]:
         print("Tools:", json.dumps(self.tool_schema, indent=2))
-        result: AsyncStream[ChatCompletionChunk] = await self.openai_client.chat.completions.create(
-            **self.models['chat'].to_openai(),
-            messages=self.history,
-            tools=self.tool_schema,
-            stream=True
+        result = cast(
+            AsyncStream[ChatCompletionChunk],
+            await self.openai_client.chat.completions.create(
+                **self.models['chat'].to_openai(),
+                messages=[msg.to_openai() for msg in self.history],
+                tools=self.tool_schema,
+                stream=True
+            )
         )
         
         tool_calls: list[PendingToolCall] = []
@@ -311,11 +344,14 @@ class Orin:
                     yield TextDelta(delta.content)
                 continue
             
+            if len(delta.tool_calls) == 0:
+                continue
+            
             # Tool calls also stream in chunks
-            for chunk in delta.tool_calls:
-                if len(tool_calls) <= chunk.index:
-                    if chunk.index > 0:
-                        finished = tool_calls[chunk.index - 1]
+            for tc in delta.tool_calls:
+                if len(tool_calls) <= tc.index:
+                    if tc.index > 0:
+                        finished = tool_calls[tc.index - 1]
                         args = await self.llm_ensure_json(finished.arguments)
                         output = yield ActionRequired(finished.name, args)
                         await self.add_message(
@@ -324,25 +360,33 @@ class Orin:
                     
                     tool_calls.append(PendingToolCall())
                 
-                pending = tool_calls[chunk.index]
+                pending = tool_calls[tc.index]
                 
-                if chunk.id:
-                    pending.id += chunk.id
+                if tc.id:
+                    pending.id += tc.id
                 
-                if func := chunk.function:
-                    func = chunk.function
+                if func := tc.function:
+                    func = tc.function
                     if func.name:
                         pending.name += func.name
                     if func.arguments:
                         pending.arguments += func.arguments
                     
-                    yield ToolDelta(chunk.id, func.name, func.arguments)
+                    yield ToolDelta(tc.id, func.name, func.arguments)
                 else:
-                    yield ToolDelta(chunk.id, None, None)
+                    yield ToolDelta(tc.id, None, None)
+            else:
+                # DRY :(
+                finished = tool_calls[tc.index] # type: ignore
+                args = await self.llm_ensure_json(finished.arguments)
+                output = yield ActionRequired(finished.name, args)
+                await self.add_message(
+                    Message('tool', finished.name, json.dumps(output))
+                )
     
     async def add_message(self, message: Message) -> Message:
         '''Add a new message to the memory.'''
-        self.history.append(message.to_openai())
+        self.history.append(message)
         mid = self.sql_add_memory(message)
         message.id = mid
         return message
@@ -358,13 +402,13 @@ class Orin:
         if len(self.history) > limit:
             oldest, newest = self.history[:-limit], self.history[-limit:]
             
-            need_summary = any(m.get("name") == "summary" for m in oldest)
+            need_summary = any(m.name == "summary" for m in oldest)
             
             # Are we due for a summary based on frequency?
             if len(newest):
                 # Find the last summary message
                 for i, m in enumerate(reversed(newest)):
-                    if m.get("name") == "summary":
+                    if m.name == "summary":
                         break
                 
                 summary_freq = limit//self.config['memory']['summary_count']
@@ -378,27 +422,50 @@ class Orin:
             
             self.history = newest
     
-    async def get_history(self) -> list[ChatCompletionMessageParam]:
+    async def get_history(self) -> list[Message]:
         return self.history
     
-    async def chat(self, message: str) -> AsyncGenerator[str, None]:
-        await self.add_message(Message('user', None, message))
+    async def cmd(self, cmd, args):
+        match cmd:
+            case "history":
+                return '\n'.join(map(str, await self.get_history()))
+            
+            case "sql":
+                return self.sql_raw(args)
+            
+            case "select":
+                return self.sql_raw(f"SELECT {args}")
+            
+            case _:
+                return f"Command {cmd!r} not found"
+    
+    async def chat(self, prompt: str) -> AsyncGenerator[str, None]:
+        await self.add_message(Message('user', None, prompt))
         
-        deltas = []
         try:
+            message = None
             it = aiter(self.llm_chat())
             while True:
                 delta = await it.__anext__()
                 match delta:
                     case TextDelta(content):
-                        deltas.append(content)
+                        if message is None:
+                            message = await self.add_message(
+                                Message('assistant', None, content)
+                            )
+                        else:
+                            await self.update_message(message, content)
                         yield content
                     case ToolDelta(id, name, args):
-                        if deltas:
-                            await self.add_message(
-                                Message('assistant', None, ''.join(deltas))
+                        if message is None:
+                            message = await self.add_message(
+                                Message('assistant', None, f"Tool call {id} {name} {args}")
                             )
-                            deltas.clear()
+                        else:
+                            await self.update_message(
+                                message, f"Tool call {id} {name} {args}"
+                            )
+                        print("Tool call", id, name, args)
                     case ActionRequired(name, args):
                         print("Action required", name, args)
                         if name in self.tools:
@@ -415,10 +482,18 @@ class Orin:
                         raise NotImplementedError(delta)
         except AsyncGeneratorReturn as e:
             finish_reason = e.value
-        
-        if deltas:
-            await self.add_message(Message('assistant', None, ''.join(deltas)))
+            print(f"{finish_reason=}")
         
         await self.truncate(self.config['memory']['history_limit'])
         
         print(len(self.history), "messages thus far")
+    
+    async def chat_cmd(self, message: str):
+        if message.startswith("/") and not message.startswith("//"):
+            cmd, *args = message[1:].split(" ", 1)
+            output = await self.cmd(cmd, args[0] if args else "")
+            for line in output.splitlines():
+                yield f"{line}\n"
+        else:
+            async for delta in self.chat(message):
+                yield delta
