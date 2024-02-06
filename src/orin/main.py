@@ -20,6 +20,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionChunk, ChatCompletio
 import httpx
 from pydantic import TypeAdapter
 
+from db import Database
 from util import logger, filter_dict, unalias_dict
 
 PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce valid JSON but have at least one error. Respond only with the corrected JSON."
@@ -196,7 +197,7 @@ class Orin:
     tools: dict[str, Tool]
     tool_schema: list[ChatCompletionToolParam]
     
-    db: sqlite3.Connection
+    db: Database
     http_client: httpx.AsyncClient
     openai_client: openai.AsyncClient
     
@@ -211,17 +212,8 @@ class Orin:
         self.tools = {}
         self.tool_schema = []
         
-        u = urlparse(config['memory']['database'])
-        if u.scheme not in {'', 'sqlite'}:
-            raise ValueError('Only sqlite databases are supported')
-        logger.debug('Connecting to database %s', u.path)
-        self.db = sqlite3.connect(u.path)
-        self.db.row_factory = sqlite3.Row
-        
-        with open('src/schema.sql') as f:
-            self.db.executescript(f.read())
-        
-        self.history = self.sql_load_history()
+        self.db = Database(config['memory'])
+        self.history = self.db.history()
     
     async def __aenter__(self):
         self.http_client = httpx.AsyncClient()
