@@ -1,19 +1,50 @@
-#!/usr/bin/bash
+#!/usr/bin/env python3
 
-# Simplistic CLI script for testing websocket integration.
-#  Adding a socket file would work, too. Requires
-#  websocat.
+# Connect to websocket server and send/receive messages.
+HOST = "localhost:8000"
+ENDPOINT = "/chat"
 
-HOST=localhost:8000
+import asyncio
+import websockets
+import aioconsole
 
-while read p; do
-  echo -n "Orin: "
-  echo "$p" | websocat ws://$HOST/chat | while IFS= read -r delta; do
-    if [ "$delta" = "" ]; then
-      echo
-    fi
-    printf "%s" "$delta"
-  done
-  echo
-  echo -n "User: "
-done
+async def handle_keepalive(ws):
+    while True:
+        await ws.send("")
+        await asyncio.sleep(5)
+
+async def handle_input(ws, ready: asyncio.Event):
+    while True:
+        await ready.wait()
+        await ws.send(await aioconsole.ainput("User: "))
+        ready.clear()
+
+async def handle_output(ws, ready: asyncio.Event):
+    while True:
+        async for delta in ws:
+            # Keepalive
+            if delta == "":
+                continue
+            
+            # Halt
+            if delta == "[DONE]":
+                break
+            
+            # Stream
+            print(delta, end="", flush=True)
+        
+        ready.set()
+        print()
+
+async def main():
+    async with websockets.connect(f"ws://{HOST}{ENDPOINT}") as ws:
+        async with asyncio.TaskGroup() as tg:
+            ready = asyncio.Event()
+            ready.set()
+            tg.create_task(handle_input(ws, ready))
+            tg.create_task(handle_output(ws, ready))
+            tg.create_task(handle_keepalive(ws))
+
+if __name__ == "__main__":
+    asyncio.run(main())
+    print(flush=True)
