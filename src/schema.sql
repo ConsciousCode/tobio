@@ -7,19 +7,24 @@ CREATE TABLE IF NOT EXISTS persistent (
 ) WITHOUT ROWID;
 
 /**
- * Messages in a conversation.
+ * Message authors.
 **/
-CREATE TABLE IF NOT EXISTS messages (
+CREATE TABLE IF NOT EXISTS authors (
+    id INTEGER PRIMARY KEY,
     role TEXT NOT NULL,
     name TEXT,
-    created_at REAL NOT NULL
+    
+    UNIQUE(role, name)
 );
 
 /**
  * Steps in a message.
 **/
 CREATE TABLE IF NOT EXISTS steps (
-    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-    step INTEGER NOT NULL,
+    id INTEGER PRIMARY KEY,
+    author_id INTEGER NOT NULL REFERENCES authors(rowid) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    kind TEXT NOT NULL,
     content TEXT
 );

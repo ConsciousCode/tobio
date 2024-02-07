@@ -1,13 +1,17 @@
+'''
+Miscellaneous utilities.
+'''
+
 from abc import ABCMeta
 import asyncio
-from functools import cache
+from functools import cache, wraps
 import sys
 import time
 import importlib.util
 import logging
 import os
 from types import GenericAlias
-from typing import Annotated, Any, AnyStr, Callable, ClassVar, ForwardRef, Literal, LiteralString, Optional, Self, Sequence, TypeAliasType, cast, get_args, get_origin, get_type_hints, overload
+from typing import Annotated, Any, AnyStr, AsyncGenerator, Callable, ClassVar, Coroutine, ForwardRef, Generator, Literal, LiteralString, Optional, Self, Sequence, TypeAliasType, cast, get_args, get_origin, get_type_hints, overload
 from collections.abc import Iterable
 from weakref import WeakKeyDictionary
 
@@ -92,6 +96,30 @@ def filter_dict(d: dict, keys: Iterable):
 def unalias_dict(d: dict, aliases: dict):
     '''Unalias a dict.'''
     return {aliases.get(k, k): v for k, v in d.items()}
+
+def async_await[T](fn: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., Generator[Any, None, T]]:
+    '''
+    Decorator to convert an async function to a generator for use with a
+    more intuitive async __await__.
+    '''
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        async_gen = fn(*args, **kwargs)
+        return async_gen.__await__()
+    return wrapper
+
+def coroutine[T](fn: Callable[..., AsyncGenerator[None, T]]) -> Callable[..., Coroutine[Any, Any, AsyncGenerator[None, T]]]:
+    '''Auto-starting coroutine decorator.'''
+    @wraps(fn)
+    async def calls_asend(*args, **kwargs):
+        gen = fn(*args, **kwargs)
+        try:
+            await gen.asend(None) # type: ignore
+        except StopAsyncIteration:
+            print("StopAsyncIteration") # Doesn't print
+        return gen
+    
+    return calls_asend
 
 def read_file(filename):
     '''Open and read a text file.'''

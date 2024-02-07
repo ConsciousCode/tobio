@@ -9,8 +9,7 @@ import tomllib
 from fastapi import FastAPI, WebSocket
 from fastapi.websockets import WebSocketState
 
-from orin import Orin, FunctionTool
-from util import logger
+from orin import Orin, FunctionTool, logger
 
 CONFIG_FILE = "private/config.toml"
 
@@ -30,7 +29,7 @@ async def bash(cmd: str) -> str:
     return stdout.decode()
 
 orin = Orin(config)
-orin.add_tools(bash)
+orin.toolbox.add(bash)
 
 ## FastAPI ##
 
