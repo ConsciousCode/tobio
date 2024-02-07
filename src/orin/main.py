@@ -86,7 +86,7 @@ class Orin:
                     need_summary = True
             
             if need_summary:
-                summary = await self.provider.models['summary'](
+                summary = await self.provider.models['summarize'](
                     [self._format_step(step) for step in self.history],
                     self.toolbox
                 )
@@ -146,12 +146,12 @@ class Orin:
                 case ActionRequired(name=name, arguments=args):
                     print("Action required", name, args)
                     await self.add_step(
-                        self.db.put_author("assistant", name),
+                        self.db.put_author("system", "tool"),
                         "tool",
-                        json.dumps(args)
+                        f'Assistant used {name} with {json.dumps(args)}'
                     )
                     if name in self.toolbox:
-                        author = self.db.put_author("assistant", name)
+                        author = self.db.put_author("tool", name)
                         kind = "tool"
                         content = json.dumps(await self.toolbox[name](**(args or {})))
                     else:

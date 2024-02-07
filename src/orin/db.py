@@ -96,6 +96,15 @@ class Database:
             return author
         
         cur = self._db.execute(
+            'SELECT * FROM authors WHERE role = ? AND name = ?',
+            (role, name)
+        )
+        if row := cur.fetchone():
+            author = Author(**row)
+            self._authors[(role, name)] = author
+            return author
+        
+        cur = self._db.execute(
             'INSERT INTO authors (role, name) VALUES (?, ?)',
             (role, name)
         )

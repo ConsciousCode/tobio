@@ -18,7 +18,7 @@ with open(CONFIG_FILE, 'rb') as f:
 
 @FunctionTool
 async def bash(cmd: str) -> str:
-    '''Run a bash command and return stdout and stderr together.'''
+    '''Run a bash command and return stdout and stderr together. Call using a valid JSON object, as in {"cmd": "the command to execute"}'''
     print("Bash", cmd)
     process = await asyncio.create_subprocess_shell(
         cmd,

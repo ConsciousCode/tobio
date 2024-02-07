@@ -160,12 +160,12 @@ class Provider:
                 return json.loads(data)
             except json.JSONDecodeError:
                 #logger.warn("Correcting JSON")
-                print("Correcting JSON", tries)
                 tries.append(Message(
                     role="user",
                     name=None,
                     content=data
                 ))
+                print("Correcting JSON", tries)
                 result = await self.models['json']([
                     *tries, Message(
                         role="system",
@@ -192,6 +192,7 @@ class Inference:
     async def _action(self, call: PendingToolCall) -> ActionRequired:
         '''Utility method to generate an ActionRequired response.'''
         
+        print("ActionRequired:", call.name, call.arguments)
         return ActionRequired(
             name=call.name,
             arguments=await self.model.provider.ensure_json(call.arguments)
@@ -218,6 +219,9 @@ class Inference:
             if reason := choice.finish_reason:
                 if reason == "function_call":
                     reason = "tool_calls"
+                # Yield any pending tool_calls
+                if tool_calls:
+                    yield await self._action(tool_calls[-1])
                 yield Finish(finish_reason=reason)
                 break
             
@@ -265,9 +269,6 @@ class Inference:
                     name=name,
                     arguments=arguments
                 )
-            else:
-                if tool_calls:
-                    yield await self._action(tool_calls[-1])
     
     @async_await
     async def __await__(self):
