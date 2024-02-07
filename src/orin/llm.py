@@ -2,17 +2,20 @@
 Code for interacting with language models.
 '''
 
+from _typeshed import structseq
 from typing import Any, AsyncIterator, Literal, ClassVar, Optional, cast
 from urllib.parse import urlparse, parse_qs
-from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam
+from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam, ChatCompletionToolMessageParam
 import json
 
 from pydantic import BaseModel
 import httpx
 import openai
 
+from orin.db.base import Author
+
 from .tool import ToolBox
-from .db import Role
+from .db import Step
 from .util import async_await, filter_dict, unalias_dict
 
 PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce valid JSON but have at least one error. Respond only with the corrected JSON."
@@ -28,6 +31,7 @@ class ToolDelta(BaseModel):
     arguments: Optional[str]
 
 class ActionRequired(BaseModel):
+    tool_id: str
     name: str
     arguments: dict
 
@@ -41,12 +45,6 @@ class PendingToolCall:
         self.id = ""
         self.name = ""
         self.arguments = ""
-
-class ToolResponse(BaseModel):
-    id: str
-    name: str
-    arguments: dict
-    output: Any
 
 class ModelConfig(BaseModel):
     proto: str
@@ -109,8 +107,8 @@ class ModelConfig(BaseModel):
             )
         )
 
-class Message(BaseModel):
-    role: Role
+class ChatMessage(BaseModel):
+    role: Author.Role
     name: Optional[str]
     content: str
     
@@ -123,6 +121,19 @@ class Message(BaseModel):
             msg["name"] = self.name
         
         return msg # type: ignore
+
+class ToolResponse(BaseModel):
+    tool_call_id: str
+    content: str
+    
+    def to_openai(self) -> ChatCompletionToolMessageParam:
+        return {
+            "role": "tool",
+            "content": self.content,
+            "tool_call_id": self.tool_call_id
+        }
+
+type Message = ChatMessage | ToolResponse
 
 class Provider:
     http_client: httpx.AsyncClient
@@ -160,14 +171,14 @@ class Provider:
                 return json.loads(data)
             except json.JSONDecodeError:
                 #logger.warn("Correcting JSON")
-                tries.append(Message(
+                tries.append(ChatMessage(
                     role="user",
                     name=None,
                     content=data
                 ))
                 print("Correcting JSON", tries)
                 result = await self.models['json']([
-                    *tries, Message(
+                    *tries, ChatMessage(
                         role="system",
                         name="prompt",
                         content=PROMPT_ENSURE_JSON
@@ -194,6 +205,7 @@ class Inference:
         
         print("ActionRequired:", call.name, call.arguments)
         return ActionRequired(
+            tool_id=call.id,
             name=call.name,
             arguments=await self.model.provider.ensure_json(call.arguments)
         )

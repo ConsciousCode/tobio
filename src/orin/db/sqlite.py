@@ -1,61 +1,46 @@
 '''
-Database modeling and related types.
+Sqlite implementation of the database.
 '''
 
 import sqlite3
-from typing import Literal, Optional, cast
+from typing import Optional, cast
 from urllib.parse import urlparse
 import time
+import os
 
 from prettytable import PrettyTable
-from pydantic import BaseModel
 
-from .util import logger
-
-type StepKind = Literal['text', 'tool', 'action']
-type Role = Literal['user', 'assistant', 'system', 'tool']
-
-class Author(BaseModel):
-    id: int
-    role: Role
-    name: Optional[str]
-
-class Step(BaseModel):
-    id: int
-    author: Author
-    created_at: float
-    updated_at: float
-    kind: StepKind
-    content: str
+from ..util import logger
+from .base import Author, Step, Row, Unbound
 
 class Database:
     _config: dict
     _db: sqlite3.Connection
     
-    _authors: dict[int|tuple[Role, Optional[str]], Author]
+    _authors: dict[int|tuple[Author.Role, Optional[str]], Author]
     '''Local author cache.'''
     
     def __init__(self, config):
         self._config = config
+        self._authors = {}
         
         u = urlparse(config['database'])
         if u.scheme not in {'', 'sqlite'}:
             raise ValueError('Only sqlite databases are supported')
         logger.info('Connecting to database %s', u.path)
         
-        self._db = sqlite3.connect(u.path)
+        self._db = sqlite3.connect(
+            os.path.join(
+                os.path.dirname(__file__),
+                "schema.sql"
+            )
+        )
         self._db.row_factory = sqlite3.Row
         
         with open(config['schema']) as f:
             self._db.executescript(f.read())
         
         self._db.commit()
-        
-        self._authors = {}
-    
-    def raw(self, query: str, *args):
-        '''Raw SQL query.'''
-        return self._db.execute(query, args)
     
     def raw_format(self, query: str):
         '''Formatted raw SQL query.'''
@@ -77,19 +62,36 @@ class Database:
         
         return f"{content} ({dt:.2f} sec)"
     
+    def add_author(self, author: Author.Unbound) -> Author:
+        '''Add author to the database.'''
+        
+        cur = self._db.execute(
+            'INSERT INTO authors (role, name) VALUES (?, ?)',
+            (author.role, author.name)
+        )
+        self._db.commit()
+        return Author(
+            id=cur.lastrowid, # type: ignore
+            role=author.role,
+            name=author.name
+        )
+    
     def get_author(self, id: int) -> Author:
         '''Get author by ID.'''
         
-        if id not in self._authors:
-            if row := self._db.execute(
-                'SELECT * FROM authors WHERE rowid = ?', (id,)
-            ).fetchone():
-                self._authors[id] = Author(**row)
-            else:
-                raise KeyError(id)
-        return self._authors[id]
+        if author := self._authors.get(id):
+            return author
+        
+        if row := self._db.execute(
+            'SELECT * FROM authors WHERE rowid = ?', (id,)
+        ).fetchone():
+            author = Author(**row)
+            self._authors[id] = author
+            return author
+        
+        raise KeyError(id)
     
-    def put_author(self, role: Role, name: Optional[str]) -> Author:
+    def put_author(self, role: Author.Role, name: Optional[str]) -> Author:
         '''Get or create author by role and name.'''
         
         if author := self._authors.get((role, name)):
@@ -100,7 +102,11 @@ class Database:
             (role, name)
         )
         if row := cur.fetchone():
+            rowid = row['id']
+            if author := self.get_author(rowid):
+                return author
             author = Author(**row)
+            self._authors[rowid] = author
             self._authors[(role, name)] = author
             return author
         
@@ -132,35 +138,61 @@ class Database:
                 created_at=row['created_at'],
                 updated_at=row['updated_at'],
                 kind=row['kind'],
+                status=row['status'],
                 content=row['content']
             ) for row in rows
         ]
     
-    def add_step(self, author: Author, kind: StepKind, content: str):
+    def add_step(self, step: Step.Unbound) -> Step:
         '''Append step to history.'''
         
-        now = time.time()
+        if step.kind == "text":
+            assert step.text is not None
+            content: str = step.text
+        else:
+            assert step.data is not None
+            content = step.data.model_dump_json()
+        
+        if step.status is None:
+            raise ValueError('Step status must be set before insertion.')
+        
+        created_at = step.created_at or time.time()
         cur = self._db.execute('''
             INSERT INTO steps (author_id, created_at, updated_at, kind, content)
             VALUES (?, ?, ?, ?, ?)
-        ''', (author.id, now, now, kind, content)
+        ''', (step.author.id, created_at, created_at, step.kind, content)
         )
         self._db.commit()
-        step_id = cast(int, cur.lastrowid)
         return Step(
-            id=step_id,
-            author=author,
-            created_at=now,
-            updated_at=now,
-            kind=kind,
+            id=cur.lastrowid, # type: ignore
+            author=step.author,
+            created_at=created_at,
+            updated_at=created_at,
+            kind=step.kind,
+            status=step.status,
             content=content
         )
     
-    def stream_step(self, step: Step, content: str):
+    def set_step_content(self, step: Step, content: str):
         '''Update step content.'''
+        
+        if step.status != "stream":
+            raise ValueError('Only stream steps can be updated')
         
         now = time.time()
         self._db.execute('''
-            UPDATE steps SET updated_at = ?, content = content || ? WHERE rowid = ?
+            UPDATE steps SET updated_at = ?, content = ? WHERE rowid = ?
         ''', (now, content, step.id))
+        self._db.commit()
+    
+    def finalize_step(self, step: Step):
+        '''Finalize a streaming step.'''
+        
+        if step.status != "stream":
+            raise ValueError('Only stream steps can be finalized')
+        
+        now = time.time()
+        self._db.execute('''
+            UPDATE steps SET updated_at = ?, status = "done" WHERE rowid = ?
+        ''', (now, step.id))
         self._db.commit()

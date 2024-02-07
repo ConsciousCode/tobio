@@ -26,5 +26,8 @@ CREATE TABLE IF NOT EXISTS steps (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     kind TEXT NOT NULL,
+    status TEXT NOT NULL,
     content TEXT
 );
+
+UPDATE steps SET status = 'failed' WHERE status = 'stream';

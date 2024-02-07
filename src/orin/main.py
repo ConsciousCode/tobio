@@ -10,7 +10,9 @@ import json
 import openai
 import httpx
 
-from .db import Author, Database, Step, StepKind
+from orin.db.base import ActionData, ToolData
+
+from .db import Author, Database, Step
 from .tool import ToolBox
 from .util import coroutine, logger
 from .llm import ActionRequired, Finish, Message, Provider, TextDelta, ToolDelta
@@ -53,20 +55,22 @@ class Orin:
         )
     
     @coroutine
-    async def stream_step(self, author: Author, kind: StepKind, content: str) -> AsyncGenerator[None, str]:
+    async def stream_step(self, step: Step.Unbound) -> AsyncGenerator[None, str]:
         '''Iteratively stream a new step to the memory.'''
         
-        step = self.db.add_step(author, kind, content)
-        self.history.append(step)
+        assert step.status in {None, "stream"}
+        step.status = "stream"
+        row = self.db.add_step(step)
+        self.history.append(row)
         while True:
-            self.db.stream_step(step, (yield))
+            self.db.set_step_content(row, (yield))
     
-    async def add_step(self, author: Author, kind: StepKind, content: str) -> Step:
+    async def add_step(self, step: Step.Unbound) -> Step:
         '''Append a discrete step to history.'''
         
-        step = self.db.add_step(author, kind, content)
-        self.history.append(step)
-        return step
+        row = self.db.add_step(step)
+        self.history.append(row)
+        return row
     
     async def truncate(self, limit: int):
         if len(self.history) > limit:
@@ -91,11 +95,11 @@ class Orin:
                     self.toolbox
                 )
                 logger.info("Summary: %s", summary)
-                return await self.add_step(
-                    self.db.put_author("system", "summary"),
-                    "text",
-                    summary
-                )
+                return await self.add_step(Step.Unbound(
+                    author=self.db.put_author("system", "summary"),
+                    kind="text",
+                    text=summary
+                ))
             
             self.history = newest
     
@@ -117,7 +121,10 @@ class Orin:
                 return f"Command {cmd!r} not found"
     
     async def chat(self, prompt: str) -> AsyncGenerator[str, None]:
-        await self.add_step(self.db.put_author("user", None), "text", prompt)
+        await self.add_step(Step.Unbound(
+            author=self.db.put_author("user", None),
+            text=prompt
+        ))
         
         it = aiter(self.provider.models['chat'](
             [self._format_step(step) for step in self.history],
@@ -129,11 +136,10 @@ class Orin:
             match delta:
                 case TextDelta(content=content):
                     if step is None:
-                        step = await self.stream_step(
-                            self.db.put_author("assistant", None),
-                            "text",
-                            content
-                        )
+                        step = await self.stream_step(Step.Unbound(
+                            author=self.db.put_author("assistant", None),
+                            text=content
+                        ))
                     else:
                         await step.asend(content)
                     
@@ -143,23 +149,29 @@ class Orin:
                     #  a partial tool call (ie invalid JSON) in history
                     step = None
                     print("Tool call", id, name, args)
-                case ActionRequired(name=name, arguments=args):
+                case ActionRequired(tool_id=tool_id, name=name, arguments=args):
                     print("Action required", name, args)
-                    await self.add_step(
-                        self.db.put_author("system", "tool"),
-                        "tool",
-                        f'Assistant used {name} with {json.dumps(args)}'
-                    )
+                    await self.add_step(Step.Unbound(
+                        author=self.db.put_author("system", "action"),
+                        data=ToolData(
+                            tool_id=tool_id,
+                            name=name,
+                            arguments=args
+                        )
+                    ))
                     if name in self.toolbox:
-                        author = self.db.put_author("tool", name)
-                        kind = "tool"
-                        content = json.dumps(await self.toolbox[name](**(args or {})))
+                        await self.add_step(Step.Unbound(
+                            author=self.db.put_author("system", "action"),
+                            data=ActionData(
+                                tool_id=tool_id,
+                                result=await self.toolbox[name](**(args or {}))
+                            )
+                        ))
                     else:
-                        author = self.db.put_author("system", "error")
-                        kind = "text"
-                        content = f"Tool {name!r} not found"
-                    
-                    await self.add_step(author, kind, content)
+                        await self.add_step(Step.Unbound(
+                            author=self.db.put_author("system", "error"),
+                            text=f"Tool {name!r} not found"
+                        ))
                 
                 case Finish(finish_reason=reason):
                     print("Finish", reason)
@@ -172,12 +184,3 @@ class Orin:
         
         print(len(self.history), "messages thus far")
     
-    async def chat_cmd(self, message: str):
-        if message.startswith("/") and not message.startswith("//"):
-            cmd, *args = message[1:].split(" ", 1)
-            output = await self.cmd(cmd, args[0] if args else "")
-            for line in output.splitlines():
-                yield f"{line}\n"
-        else:
-            async for delta in self.chat(message):
-                yield delta
