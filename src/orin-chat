@@ -16,7 +16,14 @@ async def handle_keepalive(ws):
 async def handle_input(ws, ready: asyncio.Event):
     while True:
         await ready.wait()
-        await ws.send(await aioconsole.ainput("User: "))
+        prompt = await aioconsole.ainput("User: ")
+        if prompt.startswith("/") and not prompt.startswith("//"):
+            cmd, *args = prompt[1:].split(" ", 1)
+            match cmd:
+                case "quit":
+                    raise asyncio.CancelledError("quit")
+        
+        await ws.send(prompt)
         ready.clear()
 
 async def handle_output(ws, ready: asyncio.Event):
@@ -38,12 +45,18 @@ async def handle_output(ws, ready: asyncio.Event):
 
 async def main():
     async with websockets.connect(f"ws://{HOST}{ENDPOINT}") as ws:
-        async with asyncio.TaskGroup() as tg:
-            ready = asyncio.Event()
-            ready.set()
-            tg.create_task(handle_input(ws, ready))
-            tg.create_task(handle_output(ws, ready))
-            tg.create_task(handle_keepalive(ws))
+        try:
+            async with asyncio.TaskGroup() as tg:
+                ready = asyncio.Event()
+                ready.set()
+                
+                await asyncio.gather(
+                    tg.create_task(handle_input(ws, ready)),
+                    tg.create_task(handle_output(ws, ready)),
+                    tg.create_task(handle_keepalive(ws))
+                )
+        except asyncio.CancelledError:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(main())

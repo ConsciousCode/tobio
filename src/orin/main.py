@@ -77,6 +77,8 @@ class Orin:
     async def add_step(self, step: Step.Unbound) -> Step:
         '''Append a discrete step to history.'''
         
+        step.status = "atom"
+        print(step.status, "???")
         row = self.db.add_step(step)
         self.history.append(row)
         return row

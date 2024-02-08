@@ -30,15 +30,15 @@ class Database:
             raise ValueError('Only sqlite databases are supported')
         logger.info('Connecting to database %s', u.path)
         
-        self._db = sqlite3.connect(
-            os.path.join(
-                os.path.dirname(__file__),
-                "schema.sql"
-            )
-        )
+        self._db = sqlite3.connect(u.path)
         self._db.row_factory = sqlite3.Row
         
-        with open(config['schema']) as f:
+        schema = os.path.join(
+            os.path.dirname(__file__),
+            "schema.sql"
+        )
+        
+        with open(schema) as f:
             self._db.executescript(f.read())
         
         self._db.commit()
@@ -167,13 +167,14 @@ class Database:
         
         created_at = step.created_at or time.time()
         cur = self._db.execute('''
-            INSERT INTO steps (author_id, created_at, updated_at, kind, content)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (step.author.id, created_at, created_at, kind, content)
+            INSERT INTO steps (parent_id, author_id, created_at, updated_at, kind, status, content)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (step.parent_id, step.author.id, created_at, created_at, kind, step.status, content)
         )
         self._db.commit()
         return Step(
             id=cur.lastrowid, # type: ignore
+            parent_id=step.parent_id,
             author=step.author,
             created_at=created_at,
             updated_at=created_at,

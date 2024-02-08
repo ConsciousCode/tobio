@@ -123,10 +123,7 @@ class Provider(ABC):
     models: dict[str, 'ChatModel']
     
     def __init__(self, config: dict):
-        self.models = {
-            name: ChatModel(ModelConfig.from_uri(uri), self)
-            for name, uri in config['models'].items()
-        }
+        self.config = config
     
     @abstractmethod
     def __aenter__(self) -> Coroutine[Any, Any, Self]: ...

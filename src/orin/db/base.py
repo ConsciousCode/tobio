@@ -19,6 +19,7 @@ __all__ = [
 class Author(BaseModel):
     '''Author of a step.'''
     
+    Role: ClassVar
     type Role = Literal['user', 'assistant', 'system', 'tool']
     '''The role of the author of a step.'''
     
@@ -37,13 +38,15 @@ Author.Unbound = UnboundAuthor
 class Step(BaseModel):
     '''Step in the conversation.'''
     
+    Kind: ClassVar
     type Kind = Literal['text', 'tool', 'action']
     '''
     text = Ordinary text
     tool = LLM calling a tool
     action = Tool's response (the action taken)
     '''
-
+    
+    Status: ClassVar
     type Status = Literal['atom', 'stream', 'done', 'failed']
     '''Status of a message, primarily for failsafe purposes.'''
     
