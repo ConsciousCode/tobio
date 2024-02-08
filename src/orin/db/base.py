@@ -5,7 +5,7 @@ Common types and models for the database, regardless of implementation.
 from typing import ClassVar, Literal, Optional
 from functools import cached_property
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, root_validator
 
 from ..base import ToolCall, ActionResult
 
@@ -94,6 +94,14 @@ class UnboundStep(BaseModel):
     status: Step.Status = Field(default=None)
     
     content: str|ToolCall|list[ToolCall]|ActionResult
+    
+    @root_validator(pre=True)
+    def check_content(cls, values):
+        content = values['content']
+        if isinstance(content, ToolCall):
+            values['content'] = [content]
+        
+        return values
 
 Step.Unbound = UnboundStep
 

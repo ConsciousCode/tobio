@@ -4,7 +4,7 @@ coupling to other systems (UI, database, etc). It shouldn't even run as
 a standalone program, but rather be imported by other systems.
 '''
 
-from typing import AsyncGenerator, Iterator, cast
+from typing import AsyncGenerator, Iterator, Optional, cast
 
 import openai
 import httpx
@@ -46,6 +46,7 @@ class Orin:
     openai_client: openai.AsyncClient
     
     history: list[Step]
+    persona: str
     
     def __init__(self, config: dict):
         self.config = config
@@ -55,6 +56,9 @@ class Orin:
         self.toolbox = ToolBox()
         
         self.history = self.db.get_history()
+        
+        with open(config['persona']) as f:
+            self.persona = f.read()
     
     async def __aenter__(self):
         await self.provider.__aenter__()
@@ -81,7 +85,6 @@ class Orin:
                 case TextDelta():
                     content += delta.content
                     self.db.set_step_content(row, content)
-                    print("Row content", row.content)
                 
                 case Finish():
                     self.db.finalize_step(row)
@@ -115,8 +118,7 @@ class Orin:
             
             if need_summary:
                 summary = await self.provider.models['summarize'](
-                    list(format_steps(self.history)),
-                    self.toolbox
+                    self.prompt(), self.toolbox
                 )
                 logger.info("Summary: %s", summary)
                 return await self.atomic_step(Step.Unbound(
@@ -130,31 +132,48 @@ class Orin:
     def get_history(self) -> list[Step]:
         return self.history
     
+    def prompt(self):
+        return [
+            ChatMessage(role="system", name="prompt", content=self.persona),
+            *format_steps(self.history)
+        ]
+    
     async def cmd(self, cmd, args):
         match cmd:
             case "history":
-                return '\n'.join(map(str, self.get_history()))
+                for msg in self.get_history():
+                    yield str(msg)
             
             case "sql":
-                return self.db.raw_format(args)
+                result = self.db.raw_format(args)
+                for line in result.splitlines():
+                    yield line
             
             case "select":
-                return self.db.raw_format(f"SELECT {args}")
+                result = self.db.raw_format(f"SELECT {args}")
+                for line in result.splitlines():
+                    yield line
+            
+            case "poke":
+                async for delta in self.chat(None):
+                    yield delta
             
             case _:
-                return f"Command {cmd!r} not found"
+                yield f"Command {cmd!r} not found"
     
-    async def chat(self, prompt: str) -> AsyncGenerator[str, None]:
+    async def chat(self, prompt: Optional[str]) -> AsyncGenerator[str, None]:
         last_id = self.history[-1].id if self.history else None
-        await self.atomic_step(Step.Unbound(
-            parent_id=last_id,
-            author=self.db.put_author("user", None),
-            content=prompt
-        ))
+        
+        if prompt is not None:
+            await self.atomic_step(Step.Unbound(
+                parent_id=last_id,
+                author=self.db.put_author("user", None),
+                content=prompt
+            ))
+            last_id = self.history[-1].id
         
         it = aiter(self.provider.models['chat'](
-            list(format_steps(self.history)),
-            self.toolbox
+            self.prompt(), self.toolbox
         ))
         step = None
         while True:
@@ -178,13 +197,12 @@ class Orin:
                     if step is not None:
                         await step.asend(Finish(reason="tool_calls"))
                     step = None
-                    print("Tool call", tool_id, name, args)
                 
                 case ActionRequired(tool_id=tool_id, name=name, arguments=args):
                     print("Action required", name, args)
                     await self.atomic_step(Step.Unbound(
                         parent_id=last_id,
-                        author=self.db.put_author("system", "action"),
+                        author=self.db.put_author("assistant", None),
                         content=ToolCall(
                             id=tool_id,
                             name=name,
@@ -212,7 +230,6 @@ class Orin:
                     last_id = self.history[-1].id
                 
                 case Finish(reason=reason):
-                    print("Finish", reason)
                     break
                 
                 case _:

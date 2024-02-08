@@ -65,13 +65,12 @@ async def socket(ws: WebSocket):
                         break
                 
                     case _:
-                        output = await orin.cmd(cmd, args[0] if args else "")
-                
-                for line in output.splitlines():
-                    await ws.send_text(f"{line}\n")
+                        stream = orin.cmd(cmd, args[0] if args else "")
             else:
-                async for delta in orin.chat(prompt):
-                    await ws.send_text(delta)
+                stream = orin.chat(prompt)
+            
+            async for delta in stream:
+                await ws.send_text(delta)
             
             # Halt
             await ws.send_text("[DONE]")

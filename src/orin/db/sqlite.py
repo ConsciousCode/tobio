@@ -10,7 +10,7 @@ import os
 
 from prettytable import PrettyTable
 
-from ..util import logger
+from ..util import logger, typename
 
 from .base import Author, Step, ActionResult, ToolCall
 
@@ -149,9 +149,11 @@ class Database:
         '''Append step to history.'''
         
         match step.content:
-            case list(ToolCall()):
+            case list():
                 kind = "tool"
-                content = step.content.model_dump_json()
+                content = f"[{', '.join(
+                    tool.model_dump_json() for tool in step.content
+                )}]"
             case ActionResult():
                 kind = "action"
                 content = step.content.model_dump_json()
@@ -160,7 +162,7 @@ class Database:
                 content = text
             
             case _:
-                raise TypeError("Step content")
+                raise TypeError(f"Step content {typename(step.content)}")
         
         if step.status is None:
             raise ValueError('Step status must be set before insertion.')

@@ -10,7 +10,7 @@ import openai
 from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam
 
 from ..tool import ToolBox
-from ..util import async_await
+from ..util import async_await, typename
 from ..base import Message, ChatMessage, BatchCall, ActionResult
 
 from .base import TextDelta, ToolDelta, ActionRequired, Finish, Delta, ModelConfig, Provider, Inference, ChatModel
@@ -36,31 +36,36 @@ def format_to_openai(msg: Message) -> ChatCompletionMessageParam:
                 ob["name"] = name
             return ob # type: ignore
         
-        case BatchCall(role=role, name=name, tools=tools):
-            return {
+        case BatchCall(role=role, name=name, calls=calls):
+            print("BatchCall", role, name)
+            ob = {
                 "role": role,
-                "name": name,
                 "tool_calls": [
                     {
                         "id": tool.id,
+                        "type": "function",
                         "function": {
                             "name": tool.name,
-                            "arguments": tool.arguments
+                            # Raised an error without str()?
+                            "arguments": str(tool.arguments)
                         }
-                    } for tool in tools
+                    } for tool in calls
                 ]
-            } # type: ignore
+            }
+            if name is not None:
+                ob["name"] = name
+            return ob # type: ignore
         
-        case ActionResult(tool_id=tool_id, name=name, content=content):
+        case ActionResult(tool_id=tool_id, name=name, result=result):
             return {
                 "role": "tool",
                 "tool_call_id": tool_id,
                 "name": name,
-                "content": content
+                "content": result
             } # type: ignore
         
         case _:
-            raise NotImplementedError(f"Message type {type(msg)} not supported")
+            raise NotImplementedError(f"Message type {typename(msg)} not supported")
 
 class OpenAIProvider(Provider):
     http_client: httpx.AsyncClient
