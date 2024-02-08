@@ -13,7 +13,7 @@ from .base import Message, ChatMessage, ActionResult, BatchCall, ToolCall
 from .db import Database, Step
 from .tool import ToolBox
 from .util import coroutine, logger
-from .llm import ActionRequired, Finish, Provider, OpenAIProvider, TextDelta, ToolDelta
+from .llm import ActionRequired, Finish, Provider, OpenAIProvider, TextDelta, ToolDelta, Delta
 
 def format_steps(steps: list[Step]) -> Iterator[Message]:
     for step in steps:
@@ -64,21 +64,34 @@ class Orin:
         await self.provider.__aexit__(exc_type, exc_value, traceback)
     
     @coroutine
-    async def stream_step(self, step: Step.Unbound) -> AsyncGenerator[None, str]:
+    async def stream_step(self, step: Step.Unbound) -> AsyncGenerator[None, Delta]:
         '''Iteratively stream a new step to the memory.'''
         
         assert step.status in {None, "stream"}
         step.status = "stream"
         row = self.db.add_step(step)
         self.history.append(row)
+        
+        if not isinstance(step.content, str):
+            raise TypeError(f"Can only stream text steps")
+        
+        content = step.content
         while True:
-            self.db.set_step_content(row, (yield))
+            match delta := (yield):
+                case TextDelta():
+                    content += delta.content
+                    self.db.set_step_content(row, content)
+                    print("Row content", row.content)
+                
+                case Finish():
+                    self.db.finalize_step(row)
+                    break
     
-    async def add_step(self, step: Step.Unbound) -> Step:
+    async def atomic_step(self, step: Step.Unbound) -> Step:
         '''Append a discrete step to history.'''
         
+        assert step.status in {None, "atom"}
         step.status = "atom"
-        print(step.status, "???")
         row = self.db.add_step(step)
         self.history.append(row)
         return row
@@ -106,7 +119,7 @@ class Orin:
                     self.toolbox
                 )
                 logger.info("Summary: %s", summary)
-                return await self.add_step(Step.Unbound(
+                return await self.atomic_step(Step.Unbound(
                     parent_id=newest[-1].id,
                     author=self.db.put_author("system", "summary"),
                     content=summary
@@ -114,13 +127,13 @@ class Orin:
             
             self.history = newest
     
-    async def get_history(self) -> list[Step]:
+    def get_history(self) -> list[Step]:
         return self.history
     
     async def cmd(self, cmd, args):
         match cmd:
             case "history":
-                return '\n'.join(map(str, await self.get_history()))
+                return '\n'.join(map(str, self.get_history()))
             
             case "sql":
                 return self.db.raw_format(args)
@@ -133,7 +146,7 @@ class Orin:
     
     async def chat(self, prompt: str) -> AsyncGenerator[str, None]:
         last_id = self.history[-1].id if self.history else None
-        await self.add_step(Step.Unbound(
+        await self.atomic_step(Step.Unbound(
             parent_id=last_id,
             author=self.db.put_author("user", None),
             content=prompt
@@ -145,8 +158,7 @@ class Orin:
         ))
         step = None
         while True:
-            delta = await it.__anext__()
-            match delta:
+            match delta := await anext(it):
                 case TextDelta(content=content):
                     if step is None:
                         step = await self.stream_step(Step.Unbound(
@@ -156,17 +168,21 @@ class Orin:
                         ))
                         last_id = self.history[-1].id
                     else:
-                        await step.asend(content)
+                        await step.asend(delta)
                     
                     yield content
+                
                 case ToolDelta(tool_id=tool_id, name=name, arguments=args):
-                    # Tools are too fragile to stream, don't want to record
-                    #  a partial tool call (ie invalid JSON) in history
+                    # TODO: Maybe eventually stream tools? The value is pretty
+                    #  low since it can always regenerate.
+                    if step is not None:
+                        await step.asend(Finish(reason="tool_calls"))
                     step = None
                     print("Tool call", tool_id, name, args)
+                
                 case ActionRequired(tool_id=tool_id, name=name, arguments=args):
                     print("Action required", name, args)
-                    await self.add_step(Step.Unbound(
+                    await self.atomic_step(Step.Unbound(
                         parent_id=last_id,
                         author=self.db.put_author("system", "action"),
                         content=ToolCall(
@@ -177,25 +193,25 @@ class Orin:
                     ))
                     last_id = self.history[-1].id
                     
+                    # Since the streaming step is already in history, we can
+                    #  simply append the responses as they come in.
                     if name in self.toolbox:
-                        await self.add_step(Step.Unbound(
-                            parent_id=last_id,
-                            author=self.db.put_author("system", "action"),
-                            content=ActionResult(
-                                tool_id=tool_id,
-                                name=name,
-                                result=await self.toolbox[name](**(args or {}))
-                            )
-                        ))
+                        result = await self.toolbox[name](**(args or {}))
                     else:
-                        await self.add_step(Step.Unbound(
-                            parent_id=last_id,
-                            author=self.db.put_author("system", "error"),
-                            content=f"Tool {name!r} not found"
-                        ))
+                        result = f"Tool {name!r} not found"
+                    
+                    await self.atomic_step(Step.Unbound(
+                        parent_id=last_id,
+                        author=self.db.put_author("system", "action"),
+                        content=ActionResult(
+                            tool_id=tool_id,
+                            name=name,
+                            result=result
+                        )
+                    ))
                     last_id = self.history[-1].id
                 
-                case Finish(finish_reason=reason):
+                case Finish(reason=reason):
                     print("Finish", reason)
                     break
                 

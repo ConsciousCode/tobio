@@ -20,7 +20,8 @@ async def handle_input(ws, ready: asyncio.Event):
         if prompt.startswith("/") and not prompt.startswith("//"):
             cmd, *args = prompt[1:].split(" ", 1)
             match cmd:
-                case "quit":
+                case "q"|"quit":
+                    await ws.send("/q")
                     raise asyncio.CancelledError("quit")
         
         await ws.send(prompt)

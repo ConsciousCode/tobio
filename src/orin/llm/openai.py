@@ -167,7 +167,7 @@ class OpenAIInference(Inference):
                 # Yield any pending tool_calls
                 if tool_calls:
                     yield await self._action(tool_calls[-1])
-                yield Finish(finish_reason=reason)
+                yield Finish(reason=reason)
                 break
             
             delta = choice.delta
@@ -210,6 +210,7 @@ class OpenAIInference(Inference):
                 
                 # Yield the delta
                 yield ToolDelta(
+                    index=tc.index,
                     tool_id=tc.id,
                     name=name,
                     arguments=arguments

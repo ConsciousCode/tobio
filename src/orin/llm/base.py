@@ -32,6 +32,7 @@ class TextDelta(BaseModel):
     content: str
 
 class ToolDelta(BaseModel):
+    index: int
     tool_id: Optional[str]
     name: Optional[str]
     arguments: Optional[str]
@@ -42,7 +43,7 @@ class ActionRequired(BaseModel):
     arguments: dict
 
 class Finish(BaseModel):
-    finish_reason: Literal["stop", "length", "tool_calls", "content_filter"]
+    reason: Literal["stop", "length", "tool_calls", "content_filter"]
 
 type Delta = TextDelta | ToolDelta | ActionRequired | Finish
 

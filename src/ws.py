@@ -2,6 +2,8 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+import os
+import signal
 import sys
 import traceback
 import uvicorn
@@ -55,8 +57,11 @@ async def socket(ws: WebSocket):
                 cmd, *args = prompt[1:].split(" ", 1)
                 
                 match cmd:
-                    case "close":
+                    case "q"|"quit":
                         await ws.close()
+                        # Apparently neither FastAPI nor uvicorn have a native
+                        #  way to gracefully initiate a shutdown??
+                        os.kill(os.getpid(), signal.SIGINT)
                         break
                 
                     case _:

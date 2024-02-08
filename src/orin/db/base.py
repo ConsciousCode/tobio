@@ -85,7 +85,7 @@ class Step(BaseModel):
         if self.author.name is not None:
             who += f" {self.author.name}"
         
-        return f"[{who}]@{self.id} {self.content}"
+        return f"[{who}]@{self.id} {self.content!r}"
 
 class UnboundStep(BaseModel):
     parent_id: Optional[int]

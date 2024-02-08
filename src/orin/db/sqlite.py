@@ -142,7 +142,7 @@ class Database:
                 kind=row['kind'],
                 status=row['status'],
                 content=row['content']
-            ) for row in rows
+            ) for row in reversed(rows)
         ]
     
     def add_step(self, step: Step.Unbound) -> Step:
@@ -194,6 +194,9 @@ class Database:
             UPDATE steps SET updated_at = ?, content = ? WHERE rowid = ?
         ''', (now, content, step.id))
         self._db.commit()
+        
+        step.updated_at = now
+        step.content = content
     
     def finalize_step(self, step: Step):
         '''Finalize a streaming step.'''
