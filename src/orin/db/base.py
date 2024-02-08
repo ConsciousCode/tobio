@@ -90,7 +90,6 @@ class Step(BaseModel):
 class UnboundStep(BaseModel):
     author: Author
     created_at: Optional[float] = None
-    kind: Step.Kind = Field(default=None)
     status: Step.Status = Field(default=None)
     
     text: Optional[str] = None
@@ -98,39 +97,11 @@ class UnboundStep(BaseModel):
     
     @root_validator(pre=True)
     def validate_content(cls, values):
-        kind: Optional[Step.Kind] = values.get("kind")
         text: Optional[str] = values.get('text')
         data: Optional[ToolData|ActionData] = values.get('data')
         
-        if kind is None:
-            match data:
-                case None:
-                    if text is None:
-                        raise ValueError("If kind is omitted, either text or data must be set.")
-                    kind = "text"
-                case ToolData():
-                    kind = "tool"
-                case ActionData():
-                    kind = "action"
-                case _:
-                    raise TypeError("Unknown data type")
-            values['kind'] = kind
-        
-        match kind:
-            case "text" if text is None:
-                raise ValueError("Text steps must have text.")
-            
-            case "tool":
-                if data is None:
-                    raise ValueError("Tool steps must have data.")
-                
-                ToolData.model_validate(data)
-            
-            case "action":
-                if data is None:
-                    raise ValueError("Action steps must have data")
-                
-                ActionData.model_validate(data)
+        if (text is None) == (data is None):
+            raise ValueError("Either text or data must be set.")
         
         return values
 

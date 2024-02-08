@@ -3,7 +3,7 @@ Sqlite implementation of the database.
 '''
 
 import sqlite3
-from typing import Optional, cast
+from typing import Optional
 from urllib.parse import urlparse
 import time
 import os
@@ -11,7 +11,7 @@ import os
 from prettytable import PrettyTable
 
 from ..util import logger
-from .base import Author, Step, Row, Unbound
+from .base import ActionData, Author, Step, ToolData
 
 class Database:
     _config: dict
@@ -146,12 +146,15 @@ class Database:
     def add_step(self, step: Step.Unbound) -> Step:
         '''Append step to history.'''
         
-        if step.kind == "text":
-            assert step.text is not None
-            content: str = step.text
-        else:
+        if step.text is None:
             assert step.data is not None
-            content = step.data.model_dump_json()
+            content: str = step.data.model_dump_json()
+            match step.data:
+                case ToolData(): kind = "tool"
+                case ActionData(): kind = "action"
+        else:
+            kind = "text"
+            content = step.text
         
         if step.status is None:
             raise ValueError('Step status must be set before insertion.')
@@ -160,7 +163,7 @@ class Database:
         cur = self._db.execute('''
             INSERT INTO steps (author_id, created_at, updated_at, kind, content)
             VALUES (?, ?, ?, ?, ?)
-        ''', (step.author.id, created_at, created_at, step.kind, content)
+        ''', (step.author.id, created_at, created_at, kind, content)
         )
         self._db.commit()
         return Step(
@@ -168,7 +171,7 @@ class Database:
             author=step.author,
             created_at=created_at,
             updated_at=created_at,
-            kind=step.kind,
+            kind=kind,
             status=step.status,
             content=content
         )

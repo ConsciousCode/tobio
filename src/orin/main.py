@@ -5,19 +5,37 @@ a standalone program, but rather be imported by other systems.
 '''
 
 from typing import AsyncGenerator, Literal
-import json
 
 import openai
 import httpx
 
 from orin.db.base import ActionData, ToolData
 
-from .db import Author, Database, Step
+from .db import Database, Step
 from .tool import ToolBox
 from .util import coroutine, logger
-from .llm import ActionRequired, Finish, Message, Provider, TextDelta, ToolDelta
+from .llm import ActionRequired, Finish, Message, ChatMessage, ToolResponse, Provider, OpenAIProvider, TextDelta, ToolDelta
 
 type Role = Literal['user', 'assistant', 'system', 'tool']
+
+def _format_step(step: Step) -> Message:
+    if step.kind == "text":
+        return ChatMessage(
+            role=step.author.role, # type: ignore
+            name=step.author.name,
+            content=step.content
+        )
+    elif step.kind == "tool":
+        return ChatMessage(
+            role=step.author.role, # type: ignore
+            name=step.author.name,
+            content=step.content
+        )
+    elif step.kind == "action":
+        return ToolResponse(
+            tool_id=step.data.tool_id,
+            content=step.data
+        )
 
 class Orin:
     config: dict
@@ -34,7 +52,7 @@ class Orin:
     def __init__(self, config: dict):
         self.config = config
         
-        self.provider = Provider(config)
+        self.provider = OpenAIProvider(config)
         self.db = Database(config['memory'])
         self.toolbox = ToolBox()
         

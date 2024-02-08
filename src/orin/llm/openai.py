@@ -2,43 +2,21 @@
 Code for interacting with language models.
 '''
 
-from _typeshed import structseq
-from typing import Any, AsyncIterator, Literal, ClassVar, Optional, cast
-from urllib.parse import urlparse, parse_qs
-from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam, ChatCompletionToolMessageParam
+from typing import AsyncIterator, Optional, cast, override
+from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam
 import json
 
-from pydantic import BaseModel
 import httpx
 import openai
 
-from orin.db.base import Author
+from .base import TextDelta, ToolDelta, ActionRequired, Finish, Delta, ModelConfig, Provider, Inference, ChatModel, ChatMessage, Message, ToolResponse
 
-from .tool import ToolBox
-from .db import Step
-from .util import async_await, filter_dict, unalias_dict
+from ..tool import ToolBox
+from ..util import async_await
 
 PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce valid JSON but have at least one error. Respond only with the corrected JSON."
 
 PROMPT_SUMMARY = "You are the summarization agent of Orin. Summarize the conversation thus far."
-
-class TextDelta(BaseModel):
-    content: str
-
-class ToolDelta(BaseModel):
-    id: Optional[str]
-    name: Optional[str]
-    arguments: Optional[str]
-
-class ActionRequired(BaseModel):
-    tool_id: str
-    name: str
-    arguments: dict
-
-class Finish(BaseModel):
-    finish_reason: Literal["stop", "length", "tool_calls", "content_filter"]
-
-type Delta = TextDelta | ToolDelta | ActionRequired | Finish
 
 class PendingToolCall:
     def __init__(self):
@@ -46,109 +24,39 @@ class PendingToolCall:
         self.name = ""
         self.arguments = ""
 
-class ModelConfig(BaseModel):
-    proto: str
-    
-    _aliases: ClassVar = {
-        "T": "temperature",
-        "p": "top_p",
-        "max_token": "max_tokens"
-    }
-    _keys: ClassVar = {
-        "model",
-        "temperature",
-        "max_tokens",
-        "top_p",
-        "presence_penalty",
-        "frequency_penalty",
-        "stop"
-    }
-    
-    model: str
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-    top_p: Optional[float] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    stop: Optional[str] = None
-    
-    def __len__(self):
-        return len(self._keys)
-    
-    def __getitem__(self, key):
-        if key not in self._keys:
-            raise KeyError(key)
-        return getattr(self, key)
-    
-    def __setitem__(self, key, value):
-        if key not in self._keys:
-            raise KeyError(key)
-        setattr(self, key, value)
-    
-    def to_dict(self):
-        return filter_dict(vars(self), self._keys)
-    
-    @classmethod
-    def from_uri(cls, uri: str):
-        '''Parse a model specification from a URI.'''
+def msg_to_openai(msg: Message) -> ChatCompletionMessageParam:
+    match msg:
+        case ChatMessage(role=role, name=name, content=content):
+            ob = {
+                "role": role,
+                "content": content
+            }
+            if name is not None:
+                ob["name"] = name
+            return ob # type: ignore
         
-        u = urlparse(uri)
-        assert u.scheme in {"openai"}
+        case ToolResponse(tool_id=tool_id, content=content):
+            return {
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "content": content
+            }
         
-        return ModelConfig(
-            proto=u.scheme,
-            model=u.path,
-            **filter_dict(
-                unalias_dict(
-                    parse_qs(u.query),
-                    cls._aliases
-                ),
-                cls._keys
-            )
-        )
+        case _:
+            raise NotImplementedError(f"Message type {type(msg)} not supported")
 
-class ChatMessage(BaseModel):
-    role: Author.Role
-    name: Optional[str]
-    content: str
-    
-    def to_openai(self) -> ChatCompletionMessageParam:
-        msg = {
-            "role": self.role,
-            "content": self.content
-        }
-        if self.name:
-            msg["name"] = self.name
-        
-        return msg # type: ignore
-
-class ToolResponse(BaseModel):
-    tool_call_id: str
-    content: str
-    
-    def to_openai(self) -> ChatCompletionToolMessageParam:
-        return {
-            "role": "tool",
-            "content": self.content,
-            "tool_call_id": self.tool_call_id
-        }
-
-type Message = ChatMessage | ToolResponse
-
-class Provider:
+class OpenAIProvider(Provider):
     http_client: httpx.AsyncClient
     openai_client: openai.AsyncClient
     
-    config: dict
-    models: dict[str, 'ChatModel']
-    
     def __init__(self, config):
-        self.config = config
+        super().__init__(config)
         self.models = {
             name: ChatModel(ModelConfig.from_uri(uri), self)
             for name, uri in config['models'].items()
         }
     
+    @override
     async def __aenter__(self):
         self.http_client = httpx.AsyncClient()
         self.openai_client = openai.AsyncClient(
@@ -158,6 +66,7 @@ class Provider:
         await self.openai_client.__aenter__()
         return self
     
+    @override
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.http_client.__aexit__(exc_type, exc_value, traceback)
         await self.openai_client.__aexit__(exc_type, exc_value, traceback)
@@ -187,16 +96,22 @@ class Provider:
                 data = result
         
         raise ValueError("Failed to ensure JSON")
+    
+    @override
+    def chat(self, model: ModelConfig, messages: list[Message], tools: Optional[ToolBox]=None) -> Inference:
+        return OpenAIInference(model, self, messages, tools)
 
-class Inference:
+class OpenAIInference(Inference):
     '''A reified inference, allowing one to choose to stream or await.'''
     
-    model: 'ChatModel'
+    model: ModelConfig
+    provider: OpenAIProvider
     messages: list[Message]
     toolbox: Optional[ToolBox]
     
-    def __init__(self, model: 'ChatModel', messages: list[Message], tools: Optional[ToolBox]=None):
+    def __init__(self, model: ModelConfig, provider: OpenAIProvider, messages: list[Message], tools: Optional[ToolBox]=None):
         self.model = model
+        self.provider = provider
         self.messages = messages
         self.toolbox = tools
     
@@ -207,16 +122,17 @@ class Inference:
         return ActionRequired(
             tool_id=call.id,
             name=call.name,
-            arguments=await self.model.provider.ensure_json(call.arguments)
+            arguments=await self.provider.ensure_json(call.arguments)
         )
     
+    @override
     async def __aiter__(self) -> AsyncIterator[Delta]:
-        history = [msg.to_openai() for msg in self.messages]
+        history = list(map(msg_to_openai, self.messages))
         tools = [] if self.toolbox is None else self.toolbox.render()
         result = cast(
             openai.AsyncStream[ChatCompletionChunk],
-            await self.model.provider.openai_client.chat.completions.create(
-                **self.model.config.to_dict(),
+            await self.provider.openai_client.chat.completions.create(
+                **self.model.to_dict(),
                 messages=history,
                 tools=tools,
                 stream=True
@@ -282,24 +198,13 @@ class Inference:
                     arguments=arguments
                 )
     
+    @override
     @async_await
     async def __await__(self):
-        result = await self.model.provider.openai_client.chat.completions.create(
-            messages=[msg.to_openai() for msg in self.messages],
-            **self.model.config.to_dict(),
+        result = await self.provider.openai_client.chat.completions.create(
+            messages=list(map(msg_to_openai, self.messages)),
+            **self.model.to_dict(),
             stream=False
         )
         
         return cast(str, result.choices[0].message.content)
-
-class ChatModel:
-    config: ModelConfig
-    provider: Provider
-    
-    def __init__(self, config: ModelConfig, provider: Provider):
-        self.config = config
-        self.provider = provider
-    
-    def __call__(self, messages: list[Message], toolbox: Optional[ToolBox]=None) -> Inference:
-        '''Generate a response to a series of messages.'''
-        return Inference(self, messages, toolbox)
