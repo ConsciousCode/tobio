@@ -16,7 +16,7 @@ TODO
 ### [ ] Stage 2 (low-level cognition)
 - Streaming messages
 - Message attribution
-  - Messages from stage 1 can be back-attributed by summary checkpoints
+    - Messages from stage 1 can be back-attributed by summary checkpoints
 - RAG
 - Multiple user agents
 - Tool use
@@ -33,7 +33,7 @@ TODO
 
 ### [ ] Stage 4 (interfacing)
 - Tool implementation
-  - `ed`, `python`, `bash`, `sql`
+    - `ed`, `python`, `bash`, `sql`
 
 **Final goal**: Able to use all tools effectively, reasoning about when and how to use them undirected is a non-issue.
 
@@ -77,7 +77,21 @@ For this project I have some unusual uses for words:
 - **Model** - Common parlance has diluted its meaning, but when constructing other concepts from first principles I use this very literally. A model is an analogical, mathematical representation of a subset of reality. For instance, physics equations constitute a (scientific) model. An "LLM" (Large Language Model) is very literally a mathematical model of how language changes over time, in the same way Newtonian physics is a model of how the positions of objects change over time. This is important to understand because it's easy to get stuck on the "generative AI" mode of using LLMs when this is only a tiny fraction of what they actually are.
 - **Cognitive architecture** - A system which coordinates the I/O and communication between AI models. The simplest practical CA is a chatbot with a single LLM, which feeds a chatlog and user input to the LLM and appends its generation to the chatlog.
 
-## Personhood
+## Architecture
+There's a lot of moving parts and different views of the same data. The database/memory is considered the "ground truth", with all other views emerging from it.
+
+The database only has objects for:
+- `Author`
+- `Step`
+
+`Step` is a single table for encoding all steps in a conversation. They are further unpacked into:
+- `ChatMessage` (ordinary message in a conversation)
+- `ToolCall`/`ActionResponse` (2 "messages" in a conversation unpacked from a single step)
+
+For eg the OpenAI API interface, `ChatMessage` and `ToolCall` correspond to messages with `role != "tool"` while `ActionResponse` is `role = "tool"`. `ToolCall` also has an (undocumented in the library?) `tool_calls` parameter which details the tool calls issued.
+
+## Philosophy
+### Personhood
 In thinking about cognitive architectures, our working definition of "personhood" is an intelligent system which exhibits:
 1. **Sentience** - Aka self-awareness, separating humans from non-human animals.
 2. **Subjective experience** - Episodic narrative backdrop for the Ego from a Buddhist perspective, a "story the system tells itself about itself".
@@ -88,7 +102,7 @@ In thinking about cognitive architectures, our working definition of "personhood
 
 Suffering is considered separately from preferences because while suffering can be considered a kind of negative preference, that lacks the viscerality associated with suffering. Consider for example Boston Dynamics robots, which have the preference of following their directives (eg "pick up the box"), which human testers thwart to test fault tolerance. However, this can't be characterized as suffering because the robot simply adjusts its behavior to continue following the directive without any further consideration. A cognitive architecture capable of suffering would need some form of inner monologue or other method which enables rumination. Emotional simulation and frustration signals could potentially help.
 
-## Emotionality
+### Emotionality
 Emotions are not a necessary condition for personhood, as demonstrated in fiction most prominently by Star Trek's Vulcans and Commander Data. They are, however, a key point of the *human condition*, and are thus a desirable property to emulate in a system to enable better relatability and understanding.
 
 Emotions are not magic. It's incoherent to suggest they cannot be "felt" or emulated by a computational system unless one were to genuinely argue that high-impact, low-fidelity hormonally-driven cognitive signals are in some way extraphysical and uncomputable. A first attempt at modeling is described here.
@@ -99,12 +113,12 @@ Additionally, the emotional labels associated with memories can be further updat
 
 The choice of emotional model is not significant (aside from quality) and can be easily replaced given a linear transform between the vector spaces of the affect label vectors.
 
-## Enjoyment
+### Enjoyment
 "Enjoyment" of eg art across modalities is a little less straightforward than emotionality because the features it would operate over are less objective and more learnable than emotions are. For instance, no human will ever learn to have a new emotion, but new preferences can be easily learned.
 
 As a first-order high-level approach, we might consider a balance between novelty and predictability and their cross-links with emotionality (aka [Optimal Arousal Theory](https://en.wikipedia.org/wiki/Curiosity#Optimal-arousal_theory)). Predictability is more desirable when anxious or uncertain while novelty alleviates boredom. For example, a generative music model could be used to quantify how predictable a sequence is. Too unpredictable and it becomes overstimulating, leading to a decreased preference. In this case, you would not actually want to use a pretrained generative model because if properly trained, it would be able to predict a score with pretty high accuracy regardless of genre, so it would be preferable to use a relatively small untrained model which uses online learning (maybe partially pretrained to condition it). More generally, this could be wrapped into a "novelty" cognitive signal - this would be distinct from [arousal](https://en.wikipedia.org/wiki/Arousal) which represents a more general signal of emotional stimulation. In repeated exposure to a threatening environment, arousal would be high despite novelty being low, though it isn't clear a priori whether humans actually implement these signals separately.
 
-## Memory
+### Memory
 Memory management components for the system. Types of memories include:
 - Episodic memory (chat messages and their components)
 - Associative memories (by vector similarity)
@@ -120,12 +134,12 @@ Memory is among the most important components of a sapien. Without it, you have 
 
 Because we're still in the very earliest stages it's unclear what memories are useful or valuable, as much as possible should be saved unless it's self-evidently garbage. The major components of memory are:
 - **Episodic** - One or more logs of events in the order they occurred. Tobio implements episodic logs for:
-  - Message logs within a thread.
-  - Freeform debug logs.
-  - Action logs with the name and parameters of actions performed in the process of generating a message.
-  - Summary logs of recursive conversation summaries to prevent the context window from getting too large.
-  - State log recording the changes to agent states over time.
-  - Command logs of commands issued by the user or agents.
+    - Message logs within a thread.
+    - Freeform debug logs.
+    - Action logs with the name and parameters of actions performed in the process of generating a message.
+    - Summary logs of recursive conversation summaries to prevent the context window from getting too large.
+    - State log recording the changes to agent states over time.
+    - Command logs of commands issued by the user or agents.
 - **Associative** - Attaches feature vector embeddings to memories for querying by qualitative similarity.
 - **Tagging** - Additional information optionally associated with memories such as emotional labels and hashtags for queries.
 - **Symbolic** - Knowledge graphs, internal documents (eg dossiers), data structures, and any other special-purpose cognitive aids for explicitly representing knowledge.

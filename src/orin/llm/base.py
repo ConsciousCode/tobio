@@ -8,9 +8,21 @@ from urllib.parse import urlparse, parse_qs
 
 from pydantic import BaseModel
 
-from ..db import Author
+from ..base import Message
 from ..tool import ToolBox
 from ..util import  filter_dict, unalias_dict
+
+__all__ = [
+    "TextDelta",
+    "ToolDelta",
+    "ActionRequired",
+    "Finish",
+    "Delta",
+    "ModelConfig",
+    "Inference",
+    "Provider",
+    "ChatModel"
+]
 
 PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce valid JSON but have at least one error. Respond only with the corrected JSON."
 
@@ -20,7 +32,7 @@ class TextDelta(BaseModel):
     content: str
 
 class ToolDelta(BaseModel):
-    id: Optional[str]
+    tool_id: Optional[str]
     name: Optional[str]
     arguments: Optional[str]
 
@@ -33,17 +45,6 @@ class Finish(BaseModel):
     finish_reason: Literal["stop", "length", "tool_calls", "content_filter"]
 
 type Delta = TextDelta | ToolDelta | ActionRequired | Finish
-
-class ChatMessage(BaseModel):
-    role: Literal['user', 'assistant', 'system']
-    name: Optional[str]
-    content: str
-
-class ToolResponse(BaseModel):
-    tool_id: str
-    content: str
-
-type Message = ChatMessage | ToolResponse
 
 class ModelConfig(BaseModel):
     proto: str

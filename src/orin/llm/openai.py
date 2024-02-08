@@ -3,16 +3,17 @@ Code for interacting with language models.
 '''
 
 from typing import AsyncIterator, Optional, cast, override
-from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam
 import json
 
 import httpx
 import openai
-
-from .base import TextDelta, ToolDelta, ActionRequired, Finish, Delta, ModelConfig, Provider, Inference, ChatModel, ChatMessage, Message, ToolResponse
+from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam
 
 from ..tool import ToolBox
 from ..util import async_await
+from ..base import Message, ChatMessage, BatchCall, ActionResult
+
+from .base import TextDelta, ToolDelta, ActionRequired, Finish, Delta, ModelConfig, Provider, Inference, ChatModel
 
 PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce valid JSON but have at least one error. Respond only with the corrected JSON."
 
@@ -24,7 +25,7 @@ class PendingToolCall:
         self.name = ""
         self.arguments = ""
 
-def msg_to_openai(msg: Message) -> ChatCompletionMessageParam:
+def format_to_openai(msg: Message) -> ChatCompletionMessageParam:
     match msg:
         case ChatMessage(role=role, name=name, content=content):
             ob = {
@@ -35,12 +36,28 @@ def msg_to_openai(msg: Message) -> ChatCompletionMessageParam:
                 ob["name"] = name
             return ob # type: ignore
         
-        case ToolResponse(tool_id=tool_id, content=content):
+        case BatchCall(role=role, name=name, tools=tools):
+            return {
+                "role": role,
+                "name": name,
+                "tool_calls": [
+                    {
+                        "id": tool.id,
+                        "function": {
+                            "name": tool.name,
+                            "arguments": tool.arguments
+                        }
+                    } for tool in tools
+                ]
+            } # type: ignore
+        
+        case ActionResult(tool_id=tool_id, name=name, content=content):
             return {
                 "role": "tool",
                 "tool_call_id": tool_id,
+                "name": name,
                 "content": content
-            }
+            } # type: ignore
         
         case _:
             raise NotImplementedError(f"Message type {type(msg)} not supported")
@@ -127,7 +144,7 @@ class OpenAIInference(Inference):
     
     @override
     async def __aiter__(self) -> AsyncIterator[Delta]:
-        history = list(map(msg_to_openai, self.messages))
+        history = list(map(format_to_openai, self.messages))
         tools = [] if self.toolbox is None else self.toolbox.render()
         result = cast(
             openai.AsyncStream[ChatCompletionChunk],
@@ -193,7 +210,7 @@ class OpenAIInference(Inference):
                 
                 # Yield the delta
                 yield ToolDelta(
-                    id=tc.id,
+                    tool_id=tc.id,
                     name=name,
                     arguments=arguments
                 )
@@ -202,7 +219,7 @@ class OpenAIInference(Inference):
     @async_await
     async def __await__(self):
         result = await self.provider.openai_client.chat.completions.create(
-            messages=list(map(msg_to_openai, self.messages)),
+            messages=list(map(format_to_openai, self.messages)),
             **self.model.to_dict(),
             stream=False
         )

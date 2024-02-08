@@ -11,7 +11,8 @@ import os
 from prettytable import PrettyTable
 
 from ..util import logger
-from .base import ActionData, Author, Step, ToolData
+
+from .base import Author, Step, ActionResult, ToolCall
 
 class Database:
     _config: dict
@@ -134,6 +135,7 @@ class Database:
         return [
             Step(
                 id=row['id'],
+                parent_id=row['parent_id'],
                 author=self.get_author(row['author_id']),
                 created_at=row['created_at'],
                 updated_at=row['updated_at'],
@@ -146,15 +148,19 @@ class Database:
     def add_step(self, step: Step.Unbound) -> Step:
         '''Append step to history.'''
         
-        if step.text is None:
-            assert step.data is not None
-            content: str = step.data.model_dump_json()
-            match step.data:
-                case ToolData(): kind = "tool"
-                case ActionData(): kind = "action"
-        else:
-            kind = "text"
-            content = step.text
+        match step.content:
+            case list(ToolCall()):
+                kind = "tool"
+                content = step.content.model_dump_json()
+            case ActionResult():
+                kind = "action"
+                content = step.content.model_dump_json()
+            case str(text):
+                kind = "text"
+                content = text
+            
+            case _:
+                raise TypeError("Step content")
         
         if step.status is None:
             raise ValueError('Step status must be set before insertion.')

@@ -1,0 +1,1 @@
+Code abstracting the different language model providers and modalities. Models are designed to be loadable from configuration and "called". Tools are provided separately.

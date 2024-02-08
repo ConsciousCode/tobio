@@ -4,38 +4,36 @@ coupling to other systems (UI, database, etc). It shouldn't even run as
 a standalone program, but rather be imported by other systems.
 '''
 
-from typing import AsyncGenerator, Literal
+from typing import AsyncGenerator, Iterator, cast
 
 import openai
 import httpx
 
-from orin.db.base import ActionData, ToolData
-
+from .base import Message, ChatMessage, ActionResult, BatchCall, ToolCall
 from .db import Database, Step
 from .tool import ToolBox
 from .util import coroutine, logger
-from .llm import ActionRequired, Finish, Message, ChatMessage, ToolResponse, Provider, OpenAIProvider, TextDelta, ToolDelta
+from .llm import ActionRequired, Finish, Provider, OpenAIProvider, TextDelta, ToolDelta
 
-type Role = Literal['user', 'assistant', 'system', 'tool']
-
-def _format_step(step: Step) -> Message:
-    if step.kind == "text":
-        return ChatMessage(
-            role=step.author.role, # type: ignore
-            name=step.author.name,
-            content=step.content
-        )
-    elif step.kind == "tool":
-        return ChatMessage(
-            role=step.author.role, # type: ignore
-            name=step.author.name,
-            content=step.content
-        )
-    elif step.kind == "action":
-        return ToolResponse(
-            tool_id=step.data.tool_id,
-            content=step.data
-        )
+def format_steps(steps: list[Step]) -> Iterator[Message]:
+    for step in steps:
+        match step.kind:
+            case "text":
+                yield ChatMessage(
+                    role=step.author.role,
+                    name=step.author.name,
+                    content=step.content
+                )
+            
+            case "tool":
+                yield BatchCall(
+                    role=step.author.role,
+                    name=step.author.name,
+                    calls=cast(list[ToolCall], step.data)
+                )
+            
+            case "action":
+                yield cast(ActionResult, step.data)
 
 class Orin:
     config: dict
@@ -64,13 +62,6 @@ class Orin:
     
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.provider.__aexit__(exc_type, exc_value, traceback)
-    
-    def _format_step(self, step: Step) -> Message:
-        return Message(
-            role=step.author.role,
-            name=step.author.name,
-            content=step.content
-        )
     
     @coroutine
     async def stream_step(self, step: Step.Unbound) -> AsyncGenerator[None, str]:
@@ -109,14 +100,14 @@ class Orin:
             
             if need_summary:
                 summary = await self.provider.models['summarize'](
-                    [self._format_step(step) for step in self.history],
+                    list(format_steps(self.history)),
                     self.toolbox
                 )
                 logger.info("Summary: %s", summary)
                 return await self.add_step(Step.Unbound(
+                    parent_id=newest[-1].id,
                     author=self.db.put_author("system", "summary"),
-                    kind="text",
-                    text=summary
+                    content=summary
                 ))
             
             self.history = newest
@@ -139,13 +130,15 @@ class Orin:
                 return f"Command {cmd!r} not found"
     
     async def chat(self, prompt: str) -> AsyncGenerator[str, None]:
+        last_id = self.history[-1].id if self.history else None
         await self.add_step(Step.Unbound(
+            parent_id=last_id,
             author=self.db.put_author("user", None),
-            text=prompt
+            content=prompt
         ))
         
         it = aiter(self.provider.models['chat'](
-            [self._format_step(step) for step in self.history],
+            list(format_steps(self.history)),
             self.toolbox
         ))
         step = None
@@ -155,41 +148,50 @@ class Orin:
                 case TextDelta(content=content):
                     if step is None:
                         step = await self.stream_step(Step.Unbound(
+                            parent_id=last_id,
                             author=self.db.put_author("assistant", None),
-                            text=content
+                            content=content
                         ))
+                        last_id = self.history[-1].id
                     else:
                         await step.asend(content)
                     
                     yield content
-                case ToolDelta(id=id, name=name, arguments=args):
+                case ToolDelta(tool_id=tool_id, name=name, arguments=args):
                     # Tools are too fragile to stream, don't want to record
                     #  a partial tool call (ie invalid JSON) in history
                     step = None
-                    print("Tool call", id, name, args)
+                    print("Tool call", tool_id, name, args)
                 case ActionRequired(tool_id=tool_id, name=name, arguments=args):
                     print("Action required", name, args)
                     await self.add_step(Step.Unbound(
+                        parent_id=last_id,
                         author=self.db.put_author("system", "action"),
-                        data=ToolData(
-                            tool_id=tool_id,
+                        content=ToolCall(
+                            id=tool_id,
                             name=name,
                             arguments=args
                         )
                     ))
+                    last_id = self.history[-1].id
+                    
                     if name in self.toolbox:
                         await self.add_step(Step.Unbound(
+                            parent_id=last_id,
                             author=self.db.put_author("system", "action"),
-                            data=ActionData(
+                            content=ActionResult(
                                 tool_id=tool_id,
+                                name=name,
                                 result=await self.toolbox[name](**(args or {}))
                             )
                         ))
                     else:
                         await self.add_step(Step.Unbound(
+                            parent_id=last_id,
                             author=self.db.put_author("system", "error"),
-                            text=f"Tool {name!r} not found"
+                            content=f"Tool {name!r} not found"
                         ))
+                    last_id = self.history[-1].id
                 
                 case Finish(finish_reason=reason):
                     print("Finish", reason)

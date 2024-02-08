@@ -22,12 +22,13 @@ CREATE TABLE IF NOT EXISTS authors (
 **/
 CREATE TABLE IF NOT EXISTS steps (
     id INTEGER PRIMARY KEY,
+    parent_id INTEGER REFERENCES steps(rowid) ON DELETE CASCADE,
     author_id INTEGER NOT NULL REFERENCES authors(rowid) ON DELETE CASCADE,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
-    content TEXT
+    content TEXT NOT NULL
 );
 
 UPDATE steps SET status = 'failed' WHERE status = 'stream';

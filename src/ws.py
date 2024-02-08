@@ -53,7 +53,14 @@ async def socket(ws: WebSocket):
             # Stream
             if prompt.startswith("/") and not prompt.startswith("//"):
                 cmd, *args = prompt[1:].split(" ", 1)
-                output = await orin.cmd(cmd, args[0] if args else "")
+                
+                match cmd:
+                    case "quit":
+                        break
+                
+                    case _:
+                        output = await orin.cmd(cmd, args[0] if args else "")
+                
                 for line in output.splitlines():
                     yield f"{line}\n"
             else:
