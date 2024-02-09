@@ -83,6 +83,7 @@ class OpenAIProvider(Provider):
         self.http_client = httpx.AsyncClient()
         self.openai_client = openai.AsyncClient(
             api_key=self.config['openai']['api_key'],
+            base_url=self.config['openai'].get("base_url"),
             http_client=await self.http_client.__aenter__()
         )
         await self.openai_client.__aenter__()

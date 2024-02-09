@@ -3,6 +3,7 @@ Code for interacting with language models.
 '''
 
 from abc import ABC, abstractmethod
+import os
 from typing import Any, AsyncIterator, Coroutine, Generator, Literal, ClassVar, Optional, Self
 from urllib.parse import urlparse, parse_qs
 
@@ -23,6 +24,8 @@ __all__ = [
     "Provider",
     "ChatModel"
 ]
+
+DEFAULT_PROTO = "openai"
 
 PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce valid JSON but have at least one error. Respond only with the corrected JSON."
 
@@ -48,8 +51,6 @@ class Finish(BaseModel):
 type Delta = TextDelta | ToolDelta | ActionRequired | Finish
 
 class ModelConfig(BaseModel):
-    proto: str
-    
     _aliases: ClassVar = {
         "T": "temperature",
         "p": "top_p",
@@ -65,7 +66,9 @@ class ModelConfig(BaseModel):
         "stop"
     }
     
+    proto: str
     model: str
+    base_url: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     top_p: Optional[float] = None
@@ -94,11 +97,23 @@ class ModelConfig(BaseModel):
         '''Parse a model specification from a URI.'''
         
         u = urlparse(uri)
-        assert u.scheme in {"openai"}
+        proto, *transport = u.scheme.split("+", 1)
+        
+        if transport:
+            scheme = transport[0]
+        elif proto in {"http", "https"}:
+            scheme = proto
+            proto = DEFAULT_PROTO
+        else:
+            scheme = "http"
+        
+        path = os.path.dirname(u.path)
+        model = os.path.basename(u.path)
         
         return ModelConfig(
-            proto=u.scheme,
-            model=u.path,
+            proto=proto,
+            model=model,
+            base_url=f"{scheme}://{u.netloc}{path}",
             **filter_dict(
                 unalias_dict(
                     parse_qs(u.query),
