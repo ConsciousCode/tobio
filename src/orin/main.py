@@ -6,14 +6,13 @@ a standalone program, but rather be imported by other systems.
 
 from typing import AsyncGenerator, Iterator, Optional, cast
 
-import openai
-import httpx
+from pydantic import TypeAdapter
 
-from .base import Message, ChatMessage, ActionResult, BatchCall, ToolCall
+from .base import ConfigToml, Message, ChatMessage, ActionResult, BatchCall, ToolCall
 from .db import Database, Step
 from .tool import ToolBox
 from .util import coroutine, logger
-from .llm import ActionRequired, Finish, Provider, OpenAIProvider, TextDelta, ToolDelta, Delta
+from .llm import ActionRequired, Finish, Connector, TextDelta, ToolDelta, Delta
 
 def format_steps(steps: list[Step]) -> Iterator[Message]:
     for step in steps:
@@ -36,22 +35,18 @@ def format_steps(steps: list[Step]) -> Iterator[Message]:
                 yield cast(ActionResult, step.data)
 
 class Orin:
-    config: dict
+    config: ConfigToml
     
-    provider: Provider
     db: Database
     toolbox: ToolBox
-    
-    http_client: httpx.AsyncClient
-    openai_client: openai.AsyncClient
     
     history: list[Step]
     persona: str
     
     def __init__(self, config: dict):
-        self.config = config
+        self.config = TypeAdapter(ConfigToml).validate_python(config)
         
-        self.provider = OpenAIProvider(config)
+        self.connector = Connector(self.config)
         self.db = Database(config['memory'])
         self.toolbox = ToolBox()
         
@@ -61,11 +56,11 @@ class Orin:
             self.persona = f.read()
     
     async def __aenter__(self):
-        await self.provider.__aenter__()
+        await self.connector.__aenter__()
         return self
     
     async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.provider.__aexit__(exc_type, exc_value, traceback)
+        await self.connector.__aexit__(exc_type, exc_value, traceback)
     
     @coroutine
     async def stream_step(self, step: Step.Unbound) -> AsyncGenerator[None, Delta]:
@@ -117,7 +112,7 @@ class Orin:
                     need_summary = True
             
             if need_summary:
-                summary = await self.provider.models['summarize'](
+                summary = await self.connector.models['summarize'](
                     self.prompt(), self.toolbox
                 )
                 logger.info("Summary: %s", summary)
@@ -142,17 +137,17 @@ class Orin:
         match cmd:
             case "history":
                 for msg in self.get_history():
-                    yield str(msg)
+                    yield f"{msg}\n"
             
             case "sql":
                 result = self.db.raw_format(args)
                 for line in result.splitlines():
-                    yield line
+                    yield f"{line}\n"
             
             case "select":
                 result = self.db.raw_format(f"SELECT {args}")
                 for line in result.splitlines():
-                    yield line
+                    yield f"{line}\n"
             
             case "poke":
                 async for delta in self.chat(None):
@@ -172,7 +167,7 @@ class Orin:
             ))
             last_id = self.history[-1].id
         
-        it = aiter(self.provider.models['chat'](
+        it = aiter(self.connector.models['chat'](
             self.prompt(), self.toolbox
         ))
         step = None

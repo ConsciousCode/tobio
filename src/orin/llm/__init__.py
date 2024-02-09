@@ -1,5 +1,4 @@
-from .base import TextDelta, ToolDelta, ActionRequired, Finish, Delta, ModelConfig, Provider, Inference, ChatModel
-from .openai import OpenAIProvider
+from .base import TextDelta, ToolDelta, ActionRequired, Finish, Delta, Connector, Provider, Inference, ChatModel
 
 __all__ = [
     'TextDelta',
@@ -7,10 +6,8 @@ __all__ = [
     'ActionRequired',
     'Finish',
     'Delta',
-    'ModelConfig',
+    'Connector',
     'Provider',
     'Inference',
-    'ChatModel',
-    
-    'OpenAIProvider'
+    'ChatModel'
 ]

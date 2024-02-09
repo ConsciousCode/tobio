@@ -5,13 +5,14 @@ Code for interacting with language models.
 from abc import ABC, abstractmethod
 import os
 from typing import Any, AsyncIterator, Coroutine, Generator, Literal, ClassVar, Optional, Self
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import ParseResult, urlparse, parse_qs
+from contextlib import AsyncExitStack
 
 from pydantic import BaseModel
 
-from ..base import Message
+from ..base import ConfigToml, Message
 from ..tool import ToolBox
-from ..util import  filter_dict, unalias_dict
+from ..util import logger
 
 __all__ = [
     "TextDelta",
@@ -19,7 +20,6 @@ __all__ = [
     "ActionRequired",
     "Finish",
     "Delta",
-    "ModelConfig",
     "Inference",
     "Provider",
     "ChatModel"
@@ -50,79 +50,6 @@ class Finish(BaseModel):
 
 type Delta = TextDelta | ToolDelta | ActionRequired | Finish
 
-class ModelConfig(BaseModel):
-    _aliases: ClassVar = {
-        "T": "temperature",
-        "p": "top_p",
-        "max_token": "max_tokens"
-    }
-    _keys: ClassVar = {
-        "model",
-        "temperature",
-        "max_tokens",
-        "top_p",
-        "presence_penalty",
-        "frequency_penalty",
-        "stop"
-    }
-    
-    proto: str
-    model: str
-    base_url: Optional[str] = None
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
-    top_p: Optional[float] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    stop: Optional[str] = None
-    
-    def __len__(self):
-        return len(self._keys)
-    
-    def __getitem__(self, key):
-        if key not in self._keys:
-            raise KeyError(key)
-        return getattr(self, key)
-    
-    def __setitem__(self, key, value):
-        if key not in self._keys:
-            raise KeyError(key)
-        setattr(self, key, value)
-    
-    def to_dict(self):
-        return filter_dict(vars(self), self._keys)
-    
-    @classmethod
-    def from_uri(cls, uri: str):
-        '''Parse a model specification from a URI.'''
-        
-        u = urlparse(uri)
-        proto, *transport = u.scheme.split("+", 1)
-        
-        if transport:
-            scheme = transport[0]
-        elif proto in {"http", "https"}:
-            scheme = proto
-            proto = DEFAULT_PROTO
-        else:
-            scheme = "http"
-        
-        path = os.path.dirname(u.path)
-        model = os.path.basename(u.path)
-        
-        return ModelConfig(
-            proto=proto,
-            model=model,
-            base_url=f"{scheme}://{u.netloc}{path}",
-            **filter_dict(
-                unalias_dict(
-                    parse_qs(u.query),
-                    cls._aliases
-                ),
-                cls._keys
-            )
-        )
-
 class Inference(ABC):
     '''A reified inference, allowing one to choose to stream or await.'''
     
@@ -136,7 +63,6 @@ class Provider(ABC):
     '''A provider of language models.'''
     
     config: dict
-    models: dict[str, 'ChatModel']
     
     def __init__(self, config: dict):
         self.config = config
@@ -148,19 +74,109 @@ class Provider(ABC):
     def __aexit__(self, exc_type, exc_value, traceback) -> Coroutine[Any, Any, None]: ...
     
     @abstractmethod
+    def model(self, model: str, config: dict) -> dict: ...
+    
+    @abstractmethod
     def chat(self,
-            model: ModelConfig,
+            config: dict,
             messages: list[Message],
             tools: Optional[ToolBox]=None
         ) -> Inference: ...
 
+class Connector:
+    '''Abstracts providers so they can be used interchangeably.'''
+    
+    config: ConfigToml
+    providers: dict[str, Provider]
+    provider_factories: dict[str, type[Provider]]
+    models: dict[str, 'ChatModel']
+    
+    context: AsyncExitStack
+    
+    def __init__(self, config: ConfigToml):
+        self.config = config
+        self.providers = {}
+        self.provider_factories = {}
+        self.models = {}
+    
+    def put_provider_factory(self, api: str):
+        '''
+        Get a possibly cached provider factory for a given API. This level
+        of indirection allows us to avoid importing all providers at once.
+        '''
+        match api:
+            case "openai":
+                from .openai import export_Provider
+                return export_Provider
+            
+            case _:
+                raise ValueError(f"Unknown provider API: {api}")
+    
+    async def put_provider(self, u: ParseResult):
+        '''Get a possibly cached provider for a given URI.'''
+        
+        api, *transport = u.scheme.split("+", 1)
+        if transport:
+            scheme = transport[0]
+            specific = True
+        elif api in {"http", "https"}:
+            api = DEFAULT_PROTO
+            scheme = api
+            specific = False
+        else:
+            scheme = "http"
+            specific = False
+        
+        # A path suggests an API endpoint, so probably a specific base_url
+        path = os.path.dirname(u.path)
+        if path not in {"", "/"}:
+            specific = True
+        
+        # See if we already have one
+        base_url = f"{scheme}://{u.netloc}{path}"
+        if provider := self.providers.get(base_url):
+            return provider
+        
+        # Construct a new one
+        config = self.config.get(api)
+        if config is None:
+            logger.warn("No configuration found for provider API: %s", api)
+            config = {}
+        
+        if specific:
+            config['base_url'] = base_url
+        
+        provider = self.put_provider_factory(api)(config)
+        await self.context.enter_async_context(provider)
+        self.providers[base_url] = provider
+        return provider
+    
+    async def __aenter__(self):
+        self.context = AsyncExitStack()
+        await self.context.__aenter__()
+        for name, model in self.config['models'].items():
+            u = urlparse(model)
+            model = os.path.basename(u.path)
+            provider = await self.put_provider(u)
+            
+            self.models[name] = ChatModel(
+                provider.model(model, parse_qs(u.query)),
+                provider
+            )
+        
+        return self
+    
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.context.__aexit__(exc_type, exc_value, traceback)
+        del self.context
+
 class ChatModel:
     '''A language model for turn-based chat.'''
     
-    config: ModelConfig
+    config: dict[str, Any]
     provider: Provider
     
-    def __init__(self, config: ModelConfig, provider: Provider):
+    def __init__(self, config: dict[str, Any], provider: Provider):
         self.config = config
         self.provider = provider
     
