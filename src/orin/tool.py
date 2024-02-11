@@ -5,7 +5,6 @@ Tool-use abstractions.
 from abc import ABC, abstractmethod
 from typing import Any, Optional, override
 
-from openai.types.chat import ChatCompletionToolParam
 from pydantic import TypeAdapter
 
 class Tool(ABC):
@@ -16,7 +15,8 @@ class Tool(ABC):
     async def __call__(self, **kwargs) -> Any: ...
     
     @abstractmethod
-    def render(self) -> ChatCompletionToolParam: ...
+    def schema(self) -> dict:
+        '''Generate a JSON schema for calling the tool.'''
 
 class FunctionTool(Tool):
     def __init__(self, func):
@@ -29,7 +29,7 @@ class FunctionTool(Tool):
         return await self.__func__(**kwargs)
     
     @override
-    def render(self) -> ChatCompletionToolParam:
+    def schema(self) -> dict:
         return {
             "type": "function",
             "function": {
@@ -56,8 +56,8 @@ class ToolBox:
     def __contains__(self, name: str) -> bool:
         return name in self.tools
     
-    def render(self) -> list[ChatCompletionToolParam]:
-        return [tool.render() for tool in self.tools.values()]
+    def schema(self) -> list[dict]:
+        return [tool.schema() for tool in self.tools.values()]
     
     def add(self, *tools: Tool):
         self.tools.update({tool.__name__: tool for tool in tools})

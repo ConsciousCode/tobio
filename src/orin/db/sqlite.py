@@ -12,13 +12,13 @@ from prettytable import PrettyTable
 
 from ..util import logger, typename
 
-from .base import Author, Step, ActionResult, ToolCall
+from .base import Author, Step, ActionResult, Role
 
 class Database:
     _config: dict
     _db: sqlite3.Connection
     
-    _authors: dict[int|tuple[Author.Role, Optional[str]], Author]
+    _authors: dict[int|tuple[Role, Optional[str]], Author]
     '''Local author cache.'''
     
     def __init__(self, config):
@@ -63,7 +63,7 @@ class Database:
         
         return f"{content} ({dt:.2f} sec)"
     
-    def add_author(self, author: Author.Unbound) -> Author:
+    def add_author(self, author: Author.Transient) -> Author:
         '''Add author to the database.'''
         
         cur = self._db.execute(
@@ -92,7 +92,7 @@ class Database:
         
         raise KeyError(id)
     
-    def put_author(self, role: Author.Role, name: Optional[str]) -> Author:
+    def put_author(self, role: Role, name: Optional[str]) -> Author:
         '''Get or create author by role and name.'''
         
         if author := self._authors.get((role, name)):
@@ -145,7 +145,7 @@ class Database:
             ) for row in reversed(rows)
         ]
     
-    def add_step(self, step: Step.Unbound) -> Step:
+    def add_step(self, step: Step.Transient) -> Step:
         '''Append step to history.'''
         
         match step.content:

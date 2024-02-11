@@ -4,18 +4,23 @@ between databases and LLMs, and there's less friction when they use shared
 definitions.
 '''
 
-from typing import Optional, TypedDict
+from typing import Literal, Optional, TypedDict
 from pydantic import BaseModel
+
+type Role = Literal['user', 'agent', 'system', 'tool']
+'''The role of the author of a step.'''
 
 class ToolCall(BaseModel):
     '''Data model for a tool step.'''
-    id: str
+    tool_id: str
     name: str
+    '''Name of the tool.'''
     arguments: dict
+    '''Arguments sent to the tool.'''
 
 class BatchCall(BaseModel):
     '''Data model for a group of tool steps.'''
-    role: str
+    role: Role
     name: Optional[str]=None
     calls: list[ToolCall]
 
@@ -27,7 +32,7 @@ class ActionResult(BaseModel):
 
 class ChatMessage(BaseModel):
     '''Data model for a chat message.'''
-    role: str
+    role: Role
     name: Optional[str]=None
     content: str
 

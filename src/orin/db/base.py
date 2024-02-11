@@ -7,33 +7,25 @@ from functools import cached_property
 
 from pydantic import BaseModel, Field, TypeAdapter, root_validator
 
-from ..base import ToolCall, ActionResult
+from ..base import ToolCall, ActionResult, Role
 
 __all__ = [
     "Author",
     "Step",
-    "Unbound",
     "Row"
 ]
 
 class Author(BaseModel):
     '''Author of a step.'''
     
-    Role: ClassVar
-    type Role = Literal['user', 'assistant', 'system', 'tool']
-    '''The role of the author of a step.'''
-    
-    Unbound: ClassVar[type['UnboundAuthor']]
+    Transient: ClassVar
+    class Transient(BaseModel):
+        role: Role
+        name: Optional[str]
     
     id: int
     role: Role
     name: Optional[str]
-
-class UnboundAuthor(BaseModel):
-    role: Author.Role
-    name: Optional[str]
-
-Author.Unbound = UnboundAuthor
 
 class Step(BaseModel):
     '''Step in the conversation.'''
@@ -50,7 +42,22 @@ class Step(BaseModel):
     type Status = Literal['atom', 'stream', 'done', 'failed']
     '''Status of a message, primarily for failsafe purposes.'''
     
-    Unbound: ClassVar[type['UnboundStep']]
+    Transient: ClassVar
+    class Transient(BaseModel):
+        parent_id: Optional[int]
+        author: Author
+        created_at: Optional[float] = None
+        status: 'Step.Status' = Field(default=None)
+        
+        content: str|ToolCall|list[ToolCall]|ActionResult
+        
+        @root_validator(pre=True)
+        def check_content(cls, values):
+            content = values['content']
+            if isinstance(content, ToolCall):
+                values['content'] = [content]
+            
+            return values
     
     id: int
     parent_id: Optional[int]
@@ -87,23 +94,4 @@ class Step(BaseModel):
         
         return f"[{who}]@{self.id} {self.content!r}"
 
-class UnboundStep(BaseModel):
-    parent_id: Optional[int]
-    author: Author
-    created_at: Optional[float] = None
-    status: Step.Status = Field(default=None)
-    
-    content: str|ToolCall|list[ToolCall]|ActionResult
-    
-    @root_validator(pre=True)
-    def check_content(cls, values):
-        content = values['content']
-        if isinstance(content, ToolCall):
-            values['content'] = [content]
-        
-        return values
-
-Step.Unbound = UnboundStep
-
-type Unbound = Author.Unbound | Step.Unbound
 type Row = Author | Step

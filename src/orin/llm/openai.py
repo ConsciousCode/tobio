@@ -1,8 +1,8 @@
 '''
-Code for interacting with language models.
+OpenAI API provider for Orin.
 '''
 
-from typing import Any, AsyncIterator, ClassVar, Optional, cast, override
+from typing import Any, AsyncIterator, ClassVar, Literal, Optional, cast, override
 import json
 
 import httpx
@@ -11,25 +11,29 @@ from openai.types.chat import ChatCompletionChunk, ChatCompletionMessageParam
 
 from ..tool import ToolBox
 from ..util import async_await, filter_dict, typename, unalias_dict
-from ..base import Message, ChatMessage, BatchCall, ActionResult
+from ..base import Message, ChatMessage, BatchCall, ActionResult, Role
 
-from .base import ChatModel, TextDelta, ToolDelta, ActionRequired, Finish, Delta, Provider, Inference
+from .base import ChatModel, TextDelta, ToolDelta, ActionRequired, Finish, Delta, Provider, Inference, PendingToolCall
 
 PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce valid JSON but have at least one error. Respond only with the corrected JSON."
 
 PROMPT_SUMMARY = "You are the summarization agent of Orin. Summarize the conversation thus far."
 
-class PendingToolCall:
-    def __init__(self):
-        self.id = ""
-        self.name = ""
-        self.arguments = ""
+def format_role(role: Role) -> Literal['user', 'assistant', 'system', 'tool']:
+    match role:
+        case "user": return "user"
+        case "agent": return "assistant"
+        case "system": return "system"
+        case "tool": return "tool"
+        
+        case _:
+            raise NotImplementedError(f"Role {role} not supported")
 
 def format_to_openai(msg: Message) -> ChatCompletionMessageParam:
     match msg:
         case ChatMessage(role=role, name=name, content=content):
             ob = {
-                "role": role,
+                "role": format_role(role),
                 "content": content
             }
             if name is not None:
@@ -39,10 +43,10 @@ def format_to_openai(msg: Message) -> ChatCompletionMessageParam:
         case BatchCall(role=role, name=name, calls=calls):
             print("BatchCall", role, name)
             ob = {
-                "role": role,
+                "role": format_role(role),
                 "tool_calls": [
                     {
-                        "id": tool.id,
+                        "id": tool.tool_id,
                         "type": "function",
                         "function": {
                             "name": tool.name,
@@ -175,13 +179,13 @@ class OpenAIInference(Inference):
     @override
     async def __aiter__(self) -> AsyncIterator[Delta]:
         history = list(map(format_to_openai, self.messages))
-        tools = [] if self.toolbox is None else self.toolbox.render()
+        tools = [] if self.toolbox is None else self.toolbox.schema()
         result = cast(
             openai.AsyncStream[ChatCompletionChunk],
             await self.provider.openai_client.chat.completions.create(
                 **self.config,
                 messages=history,
-                tools=tools,
+                tools=tools, # type: ignore
                 stream=True
             )
         )

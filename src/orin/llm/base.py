@@ -31,14 +31,20 @@ PROMPT_ENSURE_JSON = "The previous messages are successive attempts to produce v
 
 PROMPT_SUMMARY = "You are the summarization agent of Orin. Summarize the conversation thus far."
 
+class PendingToolCall:
+    def __init__(self):
+        self.id = ""
+        self.name = ""
+        self.arguments = ""
+
 class TextDelta(BaseModel):
     content: str
 
 class ToolDelta(BaseModel):
     index: int
-    tool_id: Optional[str]
-    name: Optional[str]
-    arguments: Optional[str]
+    tool_id: Optional[str]=None
+    name: Optional[str]=None
+    arguments: Optional[str]=None
 
 class ActionRequired(BaseModel):
     tool_id: str
@@ -46,7 +52,7 @@ class ActionRequired(BaseModel):
     arguments: dict
 
 class Finish(BaseModel):
-    reason: Literal["stop", "length", "tool_calls", "content_filter"]
+    reason: Literal["done", "stop", "length", "tool_calls", "content_filter"]
 
 type Delta = TextDelta | ToolDelta | ActionRequired | Finish
 
@@ -107,6 +113,10 @@ class Connector:
         match api:
             case "openai":
                 from .openai import export_Provider
+                return export_Provider
+            
+            case "ollama":
+                from .ollama import export_Provider
                 return export_Provider
             
             case _:
@@ -182,4 +192,4 @@ class ChatModel:
     
     def __call__(self, messages: list[Message], toolbox: Optional[ToolBox]=None) -> Inference:
         '''Generate a response to a series of messages.'''
-        return self.provider.chat(self.config, messages, toolbox)
+        return self.provider.chat(self.config, messages, toolbox) 

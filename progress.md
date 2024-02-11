@@ -3,7 +3,8 @@
 [x] Chatbot history truncation
 [x] Recursive summarization
 [x] Save messages to sqlite
-[ ] authors table
+[x] authors table
+[x] Local model providers
 Complete stage 1
 [x] Stream messages
 [ ] attribution table

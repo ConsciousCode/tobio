@@ -1,6 +1,10 @@
 pydantic
 fastapi
 uvicorn
-sqlalchemy==2.0
-openai[openai]
 websockets
+prompt_toolkit
+
+openai[openai]
+
+ollama[ollama]
+instructor[ollama]

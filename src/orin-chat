@@ -5,8 +5,10 @@ HOST = "localhost:8000"
 ENDPOINT = "/chat"
 
 import asyncio
+
 import websockets
 import aioconsole
+from prompt_toolkit.patch_stdout import patch_stdout
 
 async def handle_keepalive(ws):
     while True:
@@ -14,35 +16,37 @@ async def handle_keepalive(ws):
         await asyncio.sleep(5)
 
 async def handle_input(ws, ready: asyncio.Event):
-    while True:
-        await ready.wait()
-        prompt = await aioconsole.ainput("User: ")
-        if prompt.startswith("/") and not prompt.startswith("//"):
-            cmd, *args = prompt[1:].split(" ", 1)
-            match cmd:
-                case "q"|"quit":
-                    await ws.send("/q")
-                    raise asyncio.CancelledError("quit")
-        
-        await ws.send(prompt)
-        ready.clear()
+    with patch_stdout():
+        while True:
+            await ready.wait()
+            prompt = await aioconsole.ainput("User: ")
+            if prompt.startswith("/") and not prompt.startswith("//"):
+                cmd, *args = prompt[1:].split(" ", 1)
+                match cmd:
+                    case "q"|"quit":
+                        await ws.send("/q")
+                        raise asyncio.CancelledError("quit")
+            
+            await ws.send(prompt)
+            ready.clear()
 
 async def handle_output(ws, ready: asyncio.Event):
-    while True:
-        async for delta in ws:
-            # Keepalive
-            if delta == "":
-                continue
+    with patch_stdout():
+        while True:
+            async for delta in ws:
+                # Keepalive
+                if delta == "":
+                    continue
+                
+                # Halt
+                if delta == "[DONE]":
+                    break
+                
+                # Stream
+                print(delta, end="", flush=True)
             
-            # Halt
-            if delta == "[DONE]":
-                break
-            
-            # Stream
-            print(delta, end="", flush=True)
-        
-        ready.set()
-        print()
+            ready.set()
+            print()
 
 async def main():
     async with websockets.connect(f"ws://{HOST}{ENDPOINT}") as ws:
